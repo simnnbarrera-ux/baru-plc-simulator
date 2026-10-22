@@ -148,12 +148,22 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     }
   }, [document.components, document.wires, gridSize, sheetWidth, sheetHeight]);
 
-  // Ajustar automáticamente al cargar
+  // Ajustar automáticamente al cargar y ante cambios de tamaño del contenedor
   useEffect(() => {
     const timer = setTimeout(() => {
       fitToScreen();
     }, 100);
-    return () => clearTimeout(timer);
+
+    if (!containerRef.current) return () => clearTimeout(timer);
+    const observer = new ResizeObserver(() => {
+      fitToScreen();
+    });
+    observer.observe(containerRef.current);
+
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+    };
   }, [fitToScreen]);
 
   // Convertir coordenadas del ratón a coordenadas de la rejilla
@@ -430,11 +440,9 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       onContextMenu={e => e.preventDefault()}
     >
       <svg
-        className="w-full h-full"
-        style={{
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-          transformOrigin: '0 0'
-        }}
+        className="w-full h-full overflow-visible"
+        width="100%"
+        height="100%"
       >
         <defs>
           {/* Patrón de cuadrícula milimétrica nítida para plano técnico blanco */}
@@ -448,8 +456,10 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
           </pattern>
         </defs>
 
-        {/* Hoja de plano DIN A4 con fondo blanco hueso técnico, marco y sombra de papel */}
-        <g className="schematic-sheet">
+        {/* Grupo Maestro con Pan y Zoom (Sin restricciones de recorte del viewport SVG) */}
+        <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+          {/* Hoja de plano DIN A4 con fondo blanco hueso técnico, marco y sombra de papel */}
+          <g className="schematic-sheet">
           {/* Sombra de la hoja */}
           <rect
             x={4}
@@ -547,6 +557,7 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
             className="fill-blue-600 pointer-events-none animate-ping"
           />
         )}
+        </g>
       </svg>
 
       {/* DOCK FLOTANTE DE CONTROL DE ZOOM Y NAVEGACIÓN (Bottom-Right) */}
