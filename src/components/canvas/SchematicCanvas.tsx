@@ -53,8 +53,8 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   const gridSize = document.gridSize || 20;
 
   // Transformaciones de visualización (Pan & Zoom)
-  const [zoom, setZoom] = useState<number>(0.9);
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 60, y: 40 });
+  const [zoom, setZoom] = useState<number>(0.85);
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 100, y: 50 });
   const [isPanning, setIsPanning] = useState<boolean>(false);
   const [startPan, setStartPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isSpacePressed, setIsSpacePressed] = useState<boolean>(false);
@@ -69,26 +69,78 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   const [wireStart, setWireStart] = useState<{ x: number; y: number } | null>(null);
   const [mouseGridPos, setMouseGridPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  // Función para ajustar el plano a la pantalla (Auto-Fit)
+  // Función para ajustar el plano/circuito a la pantalla con encuadre óptimo
   const fitToScreen = useCallback(() => {
     if (!containerRef.current) return;
     const { clientWidth, clientHeight } = containerRef.current;
     if (clientWidth === 0 || clientHeight === 0) return;
 
-    const padding = 50;
-    const availableW = clientWidth - padding * 2;
-    const availableH = clientHeight - padding * 2;
+    // Si hay componentes en el esquema, encuadramos el circuito centrado a una escala cómoda
+    if (document.components && document.components.length > 0) {
+      let minGridX = Infinity;
+      let maxGridX = -Infinity;
+      let minGridY = Infinity;
+      let maxGridY = -Infinity;
 
-    const scaleX = availableW / sheetWidth;
-    const scaleY = availableH / sheetHeight;
-    const optimalZoom = Math.min(Math.max(0.4, Math.min(scaleX, scaleY)), 1.3);
+      document.components.forEach(c => {
+        minGridX = Math.min(minGridX, c.x);
+        maxGridX = Math.max(maxGridX, c.x + 3);
+        minGridY = Math.min(minGridY, c.y);
+        maxGridY = Math.max(maxGridY, c.y + 5);
+      });
 
-    const centeredX = (clientWidth - sheetWidth * optimalZoom) / 2;
-    const centeredY = (clientHeight - sheetHeight * optimalZoom) / 2;
+      if (document.wires && document.wires.length > 0) {
+        document.wires.forEach(w => {
+          minGridX = Math.min(minGridX, w.fromX, w.toX);
+          maxGridX = Math.max(maxGridX, w.fromX, w.toX);
+          minGridY = Math.min(minGridY, w.fromY, w.toY);
+          maxGridY = Math.max(maxGridY, w.fromY, w.toY);
+        });
+      }
 
-    setZoom(optimalZoom);
-    setPan({ x: Math.round(centeredX), y: Math.round(centeredY) });
-  }, [sheetWidth, sheetHeight]);
+      // Dimensiones del circuito con margen visual
+      const circuitMinX = Math.max(0, (minGridX - 3) * gridSize);
+      const circuitMaxX = Math.min(sheetWidth, (maxGridX + 4) * gridSize);
+      const circuitMinY = Math.max(0, (minGridY - 2) * gridSize);
+      const circuitMaxY = Math.min(sheetHeight, (maxGridY + 4) * gridSize);
+
+      const circuitW = Math.max(360, circuitMaxX - circuitMinX);
+      const circuitH = Math.max(360, circuitMaxY - circuitMinY);
+      const circuitCenterX = (circuitMinX + circuitMaxX) / 2;
+      const circuitCenterY = (circuitMinY + circuitMaxY) / 2;
+
+      const padX = 70;
+      const padY = 50;
+      const availW = clientWidth - padX * 2;
+      const availH = clientHeight - padY * 2;
+
+      const scaleX = availW / circuitW;
+      const scaleY = availH / circuitH;
+      // Nivel de zoom óptimo y legible (entre 75% y 115%)
+      const optimalZoom = Math.min(Math.max(0.75, Math.min(scaleX, scaleY)), 1.15);
+
+      const centeredX = clientWidth / 2 - circuitCenterX * optimalZoom;
+      const centeredY = clientHeight / 2 - circuitCenterY * optimalZoom;
+
+      setZoom(optimalZoom);
+      setPan({ x: Math.round(centeredX), y: Math.round(centeredY) });
+    } else {
+      // Si el lienzo está vacío, encuadramos la hoja completa
+      const padding = 50;
+      const availableW = clientWidth - padding * 2;
+      const availableH = clientHeight - padding * 2;
+
+      const scaleX = availableW / sheetWidth;
+      const scaleY = availableH / sheetHeight;
+      const optimalZoom = Math.min(Math.max(0.6, Math.min(scaleX, scaleY)), 1.1);
+
+      const centeredX = (clientWidth - sheetWidth * optimalZoom) / 2;
+      const centeredY = (clientHeight - sheetHeight * optimalZoom) / 2;
+
+      setZoom(optimalZoom);
+      setPan({ x: Math.round(centeredX), y: Math.round(centeredY) });
+    }
+  }, [document.components, document.wires, gridSize, sheetWidth, sheetHeight]);
 
   // Ajustar automáticamente al cargar
   useEffect(() => {

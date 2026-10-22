@@ -46,7 +46,7 @@ export const MenuBar: React.FC<Props> = ({
   };
 
   return (
-    <div className="flex items-center h-8 bg-[#e8ebf0] border-b border-[#d0d5dd] text-xs px-2 select-none relative z-50 text-slate-700">
+    <div className="flex items-center justify-between h-8 bg-[#e8ebf0] border-b border-[#d0d5dd] text-xs px-3 select-none relative z-50 text-slate-700 shrink-0 w-full">
       <div className="flex items-center gap-1">
         {/* Archivo */}
         <div className="relative">
@@ -235,7 +235,7 @@ export const MenuBar: React.FC<Props> = ({
         </div>
       </div>
 
-      <div className="ml-auto flex items-center gap-3 pr-2">
+      <div className="ml-auto flex items-center gap-3 pr-2 shrink-0">
         <BrandLogo />
       </div>
     </div>

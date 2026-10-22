@@ -7,7 +7,7 @@ interface Props {
 
 export const BrandLogo: React.FC<Props> = ({ className = '', collapsed = false }) => {
   return (
-    <div className={`flex items-center gap-2 select-none ${className}`}>
+    <div className={`flex items-center gap-2 select-none shrink-0 ${className}`}>
       {/* Emblema Vectorial de Alta Definición */}
       <div className="relative flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-blue-600 via-indigo-600 to-slate-900 shadow-sm shadow-blue-500/30 p-1 border border-blue-400/40">
         <svg viewBox="0 0 28 28" fill="none" className="w-full h-full">

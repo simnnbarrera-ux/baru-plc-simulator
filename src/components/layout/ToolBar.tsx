@@ -82,7 +82,7 @@ export const ToolBar: React.FC<Props> = ({
   const isSimulating = simulationMode === 'running';
 
   return (
-    <div className="flex items-center h-10 bg-[#f4f6f8] border-b border-[#d0d5dd] px-3 gap-1 shadow-xs select-none">
+    <div className="flex items-center h-10 bg-[#f4f6f8] border-b border-[#d0d5dd] px-3 gap-1 shadow-xs select-none shrink-0 overflow-x-auto scrollbar-none">
       {/* Archivo rápido */}
       <button
         onClick={onNew}

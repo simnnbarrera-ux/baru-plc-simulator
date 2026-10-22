@@ -55,7 +55,7 @@ export const App: React.FC = () => {
   // Modales y Herramientas Pro
   const [isImportExportOpen, setIsImportExportOpen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
-  const [isTwinOpen, setIsTwinOpen] = useState<boolean>(true); // Abierto por defecto para impacto inmediato
+  const [isTwinOpen, setIsTwinOpen] = useState<boolean>(false); // Cerrado por defecto para lienzo limpio
   const [isTimingOpen, setIsTimingOpen] = useState<boolean>(false);
   const [isMeterOpen, setIsMeterOpen] = useState<boolean>(false);
   const [isReportOpen, setIsReportOpen] = useState<boolean>(false);
@@ -405,8 +405,13 @@ export const App: React.FC = () => {
     });
   };
 
+  // Asegurar que la ventana nunca tenga scroll desfasado
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
+
   return (
-    <div className="flex flex-col w-screen h-screen overflow-hidden bg-[#f0f2f5] text-slate-800 font-sans">
+    <div className="fixed inset-0 flex flex-col overflow-hidden bg-[#f0f2f5] text-slate-800 font-sans">
       {/* 1. Barra de Menús Superior */}
       <MenuBar
         onNew={handleNewDocument}

@@ -63,9 +63,9 @@ export const ComponentRibbon: React.FC<Props> = ({
   ];
 
   return (
-    <div className="flex flex-col bg-[#eef1f5] border-b border-[#cbd5e1] shadow-xs select-none">
+    <div className="flex flex-col bg-[#eef1f5] border-b border-[#cbd5e1] shadow-xs select-none shrink-0">
       {/* Pestañas de categorías superiores */}
-      <div className="flex items-center px-2 pt-1.5 gap-1 overflow-x-auto scrollbar-none border-b border-[#d8dde6]">
+      <div className="flex items-center px-3 pt-1.5 gap-1 overflow-x-auto scrollbar-none border-b border-[#d8dde6]">
         {CATEGORY_METADATA.map(cat => {
           const isActive = activeTab === cat.id;
           return (
@@ -86,7 +86,7 @@ export const ComponentRibbon: React.FC<Props> = ({
       </div>
 
       {/* Contenedor de herramientas / componentes de la pestaña activa */}
-      <div className="flex items-center gap-2.5 p-2 overflow-x-auto min-h-[82px] bg-[#f8fafc] scrollbar-thin">
+      <div className="flex items-center gap-2.5 px-4 py-2 overflow-x-auto min-h-[82px] bg-[#f8fafc] scrollbar-thin">
         {activeTab === 'wires' ? (
           <div className="flex items-center gap-2.5">
             {wireTypes.map(w => (

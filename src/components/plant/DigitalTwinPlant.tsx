@@ -33,6 +33,7 @@ export const DigitalTwinPlant: React.FC<Props> = ({
   const [sensorActive, setSensorActive] = useState<boolean>(false);
   const [plantMode, setPlantMode] = useState<'conveyor' | 'tank'>('conveyor');
   const [tankLevel, setTankLevel] = useState<number>(25); // % nivel de agua
+  const [isMinimized, setIsMinimized] = useState<boolean>(false);
 
   // Verificar si el motor o contactor -KM1 está activo en la simulación
   const isMotorRunning = simulationState.activeCoils.has('-KM1') || 
@@ -74,34 +75,49 @@ export const DigitalTwinPlant: React.FC<Props> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="absolute top-12 right-6 z-40 w-96 bg-white/95 backdrop-blur-md rounded-xl shadow-2xl border border-slate-300 overflow-hidden text-slate-800 transition-all select-none animate-in fade-in zoom-in-95 duration-200">
+    <div className={`absolute top-14 right-4 z-40 bg-white/95 backdrop-blur-md rounded-xl shadow-2xl border border-slate-300 overflow-hidden text-slate-800 transition-all select-none animate-in fade-in zoom-in-95 duration-200 ${
+      isMinimized ? 'w-72 shadow-lg' : 'w-96'
+    }`}>
       {/* Cabecera del Gemelo Digital */}
-      <div className="flex items-center justify-between px-3.5 py-2.5 bg-gradient-to-r from-slate-900 to-slate-800 text-white">
+      <div className="flex items-center justify-between px-3.5 py-2 bg-gradient-to-r from-slate-900 to-slate-800 text-white cursor-pointer" onClick={() => isMinimized && setIsMinimized(false)}>
         <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+          <div className={`w-2.5 h-2.5 rounded-full ${isMotorRunning ? 'bg-emerald-400 animate-ping' : 'bg-slate-400'}`} />
           <h3 className="text-xs font-bold font-sans tracking-wide">
-            Planta Virtual 2D • Gemelo Digital
+            Planta 2D {isMinimized && (isMotorRunning ? '• EN MARCHA' : '• PARADO')}
           </h3>
-          <span className="text-[10px] font-mono px-1.5 py-0.2 bg-emerald-500/20 text-emerald-300 rounded border border-emerald-400/30">
-            LIVE 2D
+          <span className="text-[9px] font-mono px-1.5 py-0.2 bg-emerald-500/20 text-emerald-300 rounded border border-emerald-400/30">
+            {plantMode === 'conveyor' ? 'CINTA' : 'TANQUE'}
           </span>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+          {!isMinimized && (
+            <button
+              onClick={() => setPlantMode(plantMode === 'conveyor' ? 'tank' : 'conveyor')}
+              title="Alternar Proceso Industrial (Cinta / Tanque)"
+              className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
+            >
+              {plantMode === 'conveyor' ? 'Tanque' : 'Cinta'}
+            </button>
+          )}
           <button
-            onClick={() => setPlantMode(plantMode === 'conveyor' ? 'tank' : 'conveyor')}
-            title="Alternar Proceso Industrial (Cinta / Tanque)"
-            className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
+            onClick={() => setIsMinimized(!isMinimized)}
+            title={isMinimized ? "Expandir panel de planta" : "Minimizar panel"}
+            className="text-slate-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-slate-700 transition-colors text-xs font-mono font-bold"
           >
-            {plantMode === 'conveyor' ? 'Ver Tanque' : 'Ver Cinta'}
+            {isMinimized ? "□" : "—"}
           </button>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-1 rounded transition-colors text-xs font-bold"
+            title="Cerrar panel de planta"
+            className="text-slate-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-slate-700 transition-colors text-xs font-bold"
           >
             ✕
           </button>
         </div>
       </div>
+
+      {!isMinimized && (
+        <>
 
       {/* ÁREA DE ANIMACIÓN GRÁFICA VECTORIAL 2D */}
       <div className="relative h-48 bg-gradient-to-b from-slate-100 to-slate-200 border-b border-slate-300 overflow-hidden flex items-center justify-center p-2">
@@ -287,6 +303,8 @@ export const DigitalTwinPlant: React.FC<Props> = ({
           Sincronizado bidireccionalmente con el esquema eléctrico y PLC
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 };
