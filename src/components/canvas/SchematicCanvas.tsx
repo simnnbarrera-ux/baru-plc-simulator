@@ -35,9 +35,11 @@ interface Props {
   simulationState: SimulationState;
   activeWireType: WireType | null;
   activeTool: 'select' | 'wire' | 'delete' | string | null;
+  selectedWireId?: string | null;
   onSetTool?: (tool: string | null) => void;
-  onUpdateDocument: (doc: CircuitDocument) => void;
+  onUpdateDocument: (doc: CircuitDocument, recordHistory?: boolean, prevSnapshot?: CircuitDocument) => void;
   onComponentSelect: (comp: PlacedComponent | null) => void;
+  onWireSelect?: (wire: WireSegment | null) => void;
   onComponentEdit: (comp: PlacedComponent) => void;
   onCoordinatesChange: (x: number, y: number) => void;
   onToggleBreaker: (componentId: string) => void;
@@ -49,9 +51,11 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   simulationState,
   activeWireType,
   activeTool,
+  selectedWireId,
   onSetTool,
   onUpdateDocument,
   onComponentSelect,
+  onWireSelect,
   onComponentEdit,
   onCoordinatesChange,
   onToggleBreaker,
@@ -72,10 +76,21 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   const [isSpacePressed, setIsSpacePressed] = useState<boolean>(false);
   const [isPanToolActive, setIsPanToolActive] = useState<boolean>(false);
 
-  // Selección y arrastre de componentes
+  // Selección y arrastre de componentes y cables
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [internalSelectedWireId, setInternalSelectedWireId] = useState<string | null>(null);
+  const currentSelectedWireId = selectedWireId !== undefined ? selectedWireId : internalSelectedWireId;
+
+  const setSelectedWire = useCallback((wireId: string | null) => {
+    setInternalSelectedWireId(wireId);
+    const wire = wireId ? document.wires.find(w => w.id === wireId) || null : null;
+    onWireSelect?.(wire);
+  }, [document.wires, onWireSelect]);
+
   const [draggingCompId, setDraggingCompId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const dragStartDocRef = useRef<CircuitDocument | null>(null);
+  const dragStartPosRef = useRef<{ id: string; x: number; y: number } | null>(null);
 
   // Trazado interactivo de cables y snapping estricto
   const [wireStart, setWireStart] = useState<{ x: number; y: number } | null>(null);
@@ -437,12 +452,42 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       onUpdateDocument({
         ...document,
         wires: [...document.wires, ...newWires]
-      });
+      }, true);
 
       // Finalizar trazado actual
       setWireStart(null);
     }
   };
+
+  // Borrado de cables con reconexión limpia de nodos
+  const deleteWire = useCallback((wireId: string) => {
+    const remainingWires = document.wires.filter(w => w.id !== wireId);
+    const updatedJunctions = document.junctions.filter(j => {
+      let connections = 0;
+      for (const w of remainingWires) {
+        if ((w.fromX === j.x && w.fromY === j.y) || (w.toX === j.x && w.toY === j.y)) {
+          connections++;
+        }
+      }
+      return connections >= 2;
+    });
+    onUpdateDocument({
+      ...document,
+      wires: remainingWires,
+      junctions: updatedJunctions
+    }, true);
+    setSelectedWire(null);
+  }, [document, onUpdateDocument, setSelectedWire]);
+
+  // Borrado de componente
+  const deleteComponent = useCallback((compId: string) => {
+    onUpdateDocument({
+      ...document,
+      components: document.components.filter(c => c.id !== compId)
+    }, true);
+    setSelectedId(null);
+    onComponentSelect(null);
+  }, [document, onUpdateDocument, onComponentSelect]);
 
   // Manejo de eventos de ratón
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -462,8 +507,15 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     }
 
     // Clic en fondo: deseleccionar
-    if (e.target === containerRef.current || (e.target as HTMLElement).tagName === 'svg' || (e.target as HTMLElement).classList.contains('schematic-background')) {
+    if (
+      e.target === containerRef.current || 
+      (e.target as HTMLElement).tagName === 'svg' || 
+      (e.target as HTMLElement).classList.contains('schematic-background') ||
+      (e.target as HTMLElement).classList.contains('schematic-sheet') ||
+      (e.target as HTMLElement).tagName === 'rect'
+    ) {
       setSelectedId(null);
+      setSelectedWire(null);
       onComponentSelect(null);
       setWireStart(null);
     }
@@ -501,14 +553,45 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
         }
         return c;
       });
-      onUpdateDocument({ ...document, components: updatedComps });
+      // Actualizar posición visualmente sin registrar pasos intermedios en el historial
+      onUpdateDocument({ ...document, components: updatedComps }, false);
     }
   };
 
   const handleMouseUp = () => {
+    if (draggingCompId && dragStartPosRef.current && dragStartDocRef.current) {
+      const currComp = document.components.find(c => c.id === draggingCompId);
+      if (currComp && (currComp.x !== dragStartPosRef.current.x || currComp.y !== dragStartPosRef.current.y)) {
+        // La posición ha cambiado: registrar un único paso en el historial con el documento inicial
+        onUpdateDocument(document, true, dragStartDocRef.current);
+      }
+    }
     setIsPanning(false);
     setDraggingCompId(null);
+    dragStartDocRef.current = null;
+    dragStartPosRef.current = null;
   };
+
+  // Interacción con cables
+  const handleWireClick = useCallback((wire: WireSegment, e: React.MouseEvent) => {
+    if (isPanning || isPanToolActive) return;
+
+    if (isWiringMode) {
+      handleSnapClick(e);
+      return;
+    }
+
+    e.stopPropagation();
+
+    if (activeTool === 'delete') {
+      deleteWire(wire.id);
+      return;
+    }
+
+    setSelectedWire(wire.id);
+    setSelectedId(null);
+    onComponentSelect(null);
+  }, [isPanning, isPanToolActive, isWiringMode, activeTool, deleteWire, handleSnapClick, onComponentSelect, setSelectedWire]);
 
   // Interacción con componentes
   const handleComponentClick = (comp: PlacedComponent, e: React.MouseEvent) => {
@@ -521,6 +604,11 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     }
 
     e.stopPropagation();
+
+    if (activeTool === 'delete') {
+      deleteComponent(comp.id);
+      return;
+    }
 
     if (simulationState.mode === 'running') {
       if (comp.type.startsWith('breaker_')) {
@@ -535,6 +623,7 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     }
 
     setSelectedId(comp.id);
+    setSelectedWire(null);
     onComponentSelect(comp);
   };
 
@@ -549,7 +638,10 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
         x: gridX - comp.x,
         y: gridY - comp.y
       });
+      dragStartDocRef.current = JSON.parse(JSON.stringify(document));
+      dragStartPosRef.current = { id: comp.id, x: comp.x, y: comp.y };
       setSelectedId(comp.id);
+      setSelectedWire(null);
       onComponentSelect(comp);
     }
   };
@@ -579,12 +671,13 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
         onSetTool?.('wire');
       }
 
-      // Tecla Escape: cancela cualquier trazado activo y sale del modo cableado
+      // Tecla Escape: cancela cualquier trazado activo, deselecciona cable y componente
       if (e.key === 'Escape') {
         e.preventDefault();
         setWireStart(null);
         setHoveredSnap(null);
         setSelectedId(null);
+        setSelectedWire(null);
         onComponentSelect(null);
         if (isWiringMode) {
           onSetTool?.('select');
@@ -592,17 +685,23 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
         return;
       }
 
-      // Atajos de componente seleccionado
-      if (!selectedId || simulationState.mode !== 'stopped') return;
+      // Borrado de elementos o cables con Delete / Backspace (Supr)
+      if (simulationState.mode === 'stopped' && (e.key === 'Delete' || e.key === 'Backspace')) {
+        if (currentSelectedWireId) {
+          e.preventDefault();
+          deleteWire(currentSelectedWireId);
+          return;
+        }
+        if (selectedId) {
+          e.preventDefault();
+          deleteComponent(selectedId);
+          return;
+        }
+      }
 
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        onUpdateDocument({
-          ...document,
-          components: document.components.filter(c => c.id !== selectedId)
-        });
-        setSelectedId(null);
-        onComponentSelect(null);
-      } else if (e.key === 'r' || e.key === 'R') {
+      // Atajo R para rotar componente seleccionado
+      if (selectedId && simulationState.mode === 'stopped' && (e.key === 'r' || e.key === 'R')) {
+        e.preventDefault();
         onUpdateDocument({
           ...document,
           components: document.components.map(c => {
@@ -612,7 +711,7 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
             }
             return c;
           })
-        });
+        }, true);
       }
     };
 
@@ -628,7 +727,7 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [selectedId, document, simulationState.mode, isWiringMode, onUpdateDocument, onComponentSelect, onSetTool, fitToScreen]);
+  }, [selectedId, currentSelectedWireId, document, simulationState.mode, isWiringMode, onUpdateDocument, onComponentSelect, setSelectedWire, deleteWire, deleteComponent, onSetTool, fitToScreen]);
 
   // Determinar cursor dinámico
   const getCursorClass = () => {
@@ -721,6 +820,8 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
           junctions={document.junctions}
           gridSize={gridSize}
           energizedWires={simulationState.energizedWires}
+          selectedWireId={currentSelectedWireId}
+          onWireClick={handleWireClick}
         />
 
         {/* Previsualización ortogonal del cable en trazado activo */}

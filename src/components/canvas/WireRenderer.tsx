@@ -6,13 +6,17 @@ interface Props {
   junctions: JunctionNode[];
   gridSize: number;
   energizedWires: Set<string>;
+  selectedWireId?: string | null;
+  onWireClick?: (wire: WireSegment, e: React.MouseEvent) => void;
 }
 
 export const WireRenderer: React.FC<Props> = ({
   wires,
   junctions,
   gridSize,
-  energizedWires
+  energizedWires,
+  selectedWireId,
+  onWireClick
 }) => {
   const getWireColor = (wireType: WireType, isEnergized: boolean): string => {
     if (isEnergized) {
@@ -36,18 +40,19 @@ export const WireRenderer: React.FC<Props> = ({
 
   return (
     <g className="wires-layer">
-      {/* Trazado de cables */}
+      {/* Trazado interactivo de cables */}
       {wires.map(wire => {
         const x1 = wire.fromX * gridSize;
         const y1 = wire.fromY * gridSize;
         const x2 = wire.toX * gridSize;
         const y2 = wire.toY * gridSize;
         const isEnergized = energizedWires.has(wire.id);
+        const isSelected = selectedWireId === wire.id;
         const strokeColor = getWireColor(wire.wireType, isEnergized);
 
         return (
-          <g key={wire.id}>
-            {/* Halo de energía si está con tensión */}
+          <g key={wire.id} className="group">
+            {/* Halo de energía si está bajo tensión eléctrica */}
             {isEnergized && (
               <line
                 x1={x1}
@@ -58,30 +63,92 @@ export const WireRenderer: React.FC<Props> = ({
                 strokeWidth={6}
                 strokeOpacity={0.3}
                 strokeLinecap="round"
+                className="pointer-events-none"
               />
             )}
+
+            {/* Resaltado visual de selección activa (Glow cian + línea punteada + marcadores terminales) */}
+            {isSelected && (
+              <>
+                {/* Resplandor exterior cian */}
+                <line
+                  x1={x1}
+                  y1={y1}
+                  x2={x2}
+                  y2={y2}
+                  stroke="#06b6d4"
+                  strokeWidth={8}
+                  strokeOpacity={0.5}
+                  strokeLinecap="round"
+                  className="pointer-events-none animate-pulse"
+                />
+                {/* Línea punteada de contraste técnico */}
+                <line
+                  x1={x1}
+                  y1={y1}
+                  x2={x2}
+                  y2={y2}
+                  stroke="#0284c7"
+                  strokeWidth={3.5}
+                  strokeDasharray="5 3"
+                  strokeLinecap="round"
+                  className="pointer-events-none"
+                />
+                {/* Puntos terminales del cable seleccionado */}
+                <circle
+                  cx={x1}
+                  cy={y1}
+                  r={4}
+                  className="fill-cyan-400 stroke-white stroke-1.5 pointer-events-none shadow-xs"
+                />
+                <circle
+                  cx={x2}
+                  cy={y2}
+                  r={4}
+                  className="fill-cyan-400 stroke-white stroke-1.5 pointer-events-none shadow-xs"
+                />
+              </>
+            )}
+
+            {/* Línea gráfica principal del cable */}
             <line
               x1={x1}
               y1={y1}
               x2={x2}
               y2={y2}
-              stroke={strokeColor}
+              stroke={isSelected ? '#0284c7' : strokeColor}
               strokeWidth={wire.wireType === 'control' ? 2 : 2.5}
               strokeLinecap="round"
-              className="transition-colors duration-150"
+              className="transition-colors duration-150 pointer-events-none"
+            />
+
+            {/* Zona de impacto táctil / clic transparente amplia (12px de ancho) */}
+            <line
+              x1={x1}
+              y1={y1}
+              x2={x2}
+              y2={y2}
+              stroke="transparent"
+              strokeWidth={12}
+              strokeLinecap="round"
+              className="cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                onWireClick?.(wire, e);
+              }}
             />
           </g>
         );
       })}
 
-      {/* Puntos de unión / Nodos de conexión (Junction dots) */}
+      {/* Nodos de unión / Conexión (Junction dots) */}
       {junctions.map(j => (
         <circle
           key={j.id}
           cx={j.x * gridSize}
           cy={j.y * gridSize}
           r={3.5}
-          className="fill-slate-900 stroke-white stroke-1"
+          className="fill-slate-900 stroke-white stroke-1 pointer-events-none"
         />
       ))}
     </g>

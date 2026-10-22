@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { CircuitDocument, PlacedComponent, WireType } from './types/circuit';
+import { CircuitDocument, PlacedComponent, WireSegment, WireType } from './types/circuit';
 import { SimulationState } from './types/simulation';
 import { CircuitSolver } from './core/simulation/solver';
 import { 
@@ -33,6 +33,16 @@ export const App: React.FC = () => {
   // Estado del documento esquemático (iniciado con el arranque directo trifásico interactivo)
   const [doc, setDoc] = useState<CircuitDocument>(DIRECT_STARTER_CIRCUIT);
 
+  // Historial de Deshacer y Rehacer (Pila limitada a los últimos 40 estados)
+  const MAX_HISTORY = 40;
+  const [pastDocs, setPastDocs] = useState<CircuitDocument[]>([]);
+  const [futureDocs, setFutureDocs] = useState<CircuitDocument[]>([]);
+
+  const docRef = useRef(doc);
+  useEffect(() => {
+    docRef.current = doc;
+  }, [doc]);
+
   // Estado del motor de simulación
   const [simulationState, setSimulationState] = useState<SimulationState>({
     mode: 'stopped',
@@ -51,12 +61,13 @@ export const App: React.FC = () => {
   const [activeTool, setActiveTool] = useState<string | null>('select');
   const [selectedWireType, setSelectedWireType] = useState<WireType | null>(null);
   const [selectedComponent, setSelectedComponent] = useState<PlacedComponent | null>(null);
+  const [selectedWire, setSelectedWire] = useState<WireSegment | null>(null);
   const [editingComponent, setEditingComponent] = useState<PlacedComponent | null>(null);
 
   // Modales y Herramientas Pro
   const [isImportExportOpen, setIsImportExportOpen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
-  const [isTwinOpen, setIsTwinOpen] = useState<boolean>(false); // Cerrado por defecto para lienzo limpio
+  const [isTwinOpen, setIsTwinOpen] = useState<boolean>(false);
   const [isTimingOpen, setIsTimingOpen] = useState<boolean>(false);
   const [isMeterOpen, setIsMeterOpen] = useState<boolean>(false);
   const [isReportOpen, setIsReportOpen] = useState<boolean>(false);
@@ -92,8 +103,122 @@ export const App: React.FC = () => {
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
+    setTimeout(() => setToast(null), 3500);
   }, []);
+
+  // Actualización de documento con registro atómico en el historial de Deshacer/Rehacer
+  const updateDocWithHistory = useCallback((
+    newDocOrUpdater: CircuitDocument | ((prev: CircuitDocument) => CircuitDocument),
+    saveHistory = true,
+    previousDocSnapshot?: CircuitDocument
+  ) => {
+    setDoc(prev => {
+      const nextDoc = typeof newDocOrUpdater === 'function' ? newDocOrUpdater(prev) : newDocOrUpdater;
+      if (saveHistory) {
+        const snapshot = previousDocSnapshot 
+          ? JSON.parse(JSON.stringify(previousDocSnapshot)) 
+          : JSON.parse(JSON.stringify(prev));
+        setPastDocs(p => [...p, snapshot].slice(-MAX_HISTORY));
+        setFutureDocs([]);
+      }
+      return nextDoc;
+    });
+  }, []);
+
+  // Función Deshacer (Ctrl+Z)
+  const handleUndo = useCallback(() => {
+    setPastDocs(prevPast => {
+      if (prevPast.length === 0) return prevPast;
+      const previousDoc = prevPast[prevPast.length - 1];
+      const newPast = prevPast.slice(0, prevPast.length - 1);
+
+      setFutureDocs(prevFuture => [JSON.parse(JSON.stringify(docRef.current)), ...prevFuture].slice(0, MAX_HISTORY));
+      setDoc(previousDoc);
+      setSelectedComponent(null);
+      setSelectedWire(null);
+      showToast('Deshecho (Ctrl+Z)', 'info');
+      return newPast;
+    });
+  }, [showToast]);
+
+  // Función Rehacer (Ctrl+Y / Ctrl+Shift+Z)
+  const handleRedo = useCallback(() => {
+    setFutureDocs(prevFuture => {
+      if (prevFuture.length === 0) return prevFuture;
+      const nextDoc = prevFuture[0];
+      const newFuture = prevFuture.slice(1);
+
+      setPastDocs(prevPast => [...prevPast, JSON.parse(JSON.stringify(docRef.current))].slice(-MAX_HISTORY));
+      setDoc(nextDoc);
+      setSelectedComponent(null);
+      setSelectedWire(null);
+      showToast('Rehecho (Ctrl+Y)', 'info');
+      return newFuture;
+    });
+  }, [showToast]);
+
+  // Borrado de elemento o cable seleccionado (Supr / Delete)
+  const handleDeleteSelection = useCallback(() => {
+    if (selectedWire) {
+      const remainingWires = doc.wires.filter(w => w.id !== selectedWire.id);
+      const updatedJunctions = doc.junctions.filter(j => {
+        let count = 0;
+        for (const w of remainingWires) {
+          if ((w.fromX === j.x && w.fromY === j.y) || (w.toX === j.x && w.toY === j.y)) count++;
+        }
+        return count >= 2;
+      });
+      updateDocWithHistory({
+        ...doc,
+        wires: remainingWires,
+        junctions: updatedJunctions
+      }, true);
+      setSelectedWire(null);
+      showToast('Cable conductor eliminado', 'info');
+      return;
+    }
+
+    if (selectedComponent) {
+      updateDocWithHistory({
+        ...doc,
+        components: doc.components.filter(c => c.id !== selectedComponent.id)
+      }, true);
+      const tag = selectedComponent.tag;
+      setSelectedComponent(null);
+      showToast(`Componente ${tag} eliminado`, 'info');
+      return;
+    }
+  }, [selectedWire, selectedComponent, doc, updateDocWithHistory, showToast]);
+
+  // Escucha de atajos de teclado globales para Deshacer (Ctrl+Z) y Rehacer (Ctrl+Y)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName?.toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) {
+        return;
+      }
+
+      const modifier = e.ctrlKey || e.metaKey;
+      if (!modifier) return;
+
+      // Ctrl+Z (sin Shift) -> Deshacer
+      if ((e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+
+      // Ctrl+Y o Ctrl+Shift+Z -> Rehacer
+      if ((e.key === 'y' || e.key === 'Y') || (e.shiftKey && (e.key === 'z' || e.key === 'Z'))) {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleUndo, handleRedo]);
 
   const handleSetTool = useCallback((tool: string | null) => {
     setActiveTool(tool);
@@ -121,13 +246,17 @@ export const App: React.FC = () => {
         if (file.name.endsWith('.json')) {
           const parsed = JSON.parse(text);
           setSimulationState(prev => ({ ...prev, mode: 'stopped' }));
-          setDoc(parsed);
+          updateDocWithHistory(parsed, true);
+          setSelectedComponent(null);
+          setSelectedWire(null);
           showToast(`Esquema cargado: ${file.name} (${parsed.components?.length || 0} componentes)`, 'success');
           setTimeout(() => canvasRef.current?.fitToScreen(), 150);
         } else {
           const parsed = CadParser.parse(text);
           setSimulationState(prev => ({ ...prev, mode: 'stopped' }));
-          setDoc(parsed);
+          updateDocWithHistory(parsed, true);
+          setSelectedComponent(null);
+          setSelectedWire(null);
           showToast(`Esquema CADe_SIMU cargado: ${file.name} (${parsed.components?.length || 0} componentes)`, 'success');
           setTimeout(() => canvasRef.current?.fitToScreen(), 150);
         }
@@ -136,7 +265,7 @@ export const App: React.FC = () => {
       }
     };
     reader.readAsText(file);
-  }, [showToast]);
+  }, [showToast, updateDocWithHistory]);
 
   // Guardado directo sin modal confuso (descarga directa del archivo .cad)
   const handleDirectSave = useCallback(() => {
@@ -386,7 +515,6 @@ export const App: React.FC = () => {
 
   // Interacción en Simulación: Conmutar disyuntor/guardamotor
   const handleToggleBreaker = (compId: string) => {
-    // Si hay cortocircuito franco presente, el guardamotor no puede cerrar (disparo magnético instantáneo)
     if (activeFaults.has('short_circuit')) {
       soundEffects.playShortCircuitBang();
       setShortCircuitAlert("¡DISPARO MAGNÉTICO INSTANTÁNEO EN -Q1! Imposible rearmar: Cortocircuito franco presente.");
@@ -455,7 +583,6 @@ export const App: React.FC = () => {
     const def = COMPONENT_CATALOG.find(c => c.type === compType);
     if (!def) return;
 
-    // Colocar nuevo componente en una posición libre cerca de las coordenadas actuales o centro
     const newComp: PlacedComponent = {
       id: `comp_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       type: compType,
@@ -466,11 +593,12 @@ export const App: React.FC = () => {
       state: { isOpen: false, isActuated: false }
     };
 
-    setDoc(prev => ({
+    updateDocWithHistory(prev => ({
       ...prev,
       components: [...prev.components, newComp]
-    }));
+    }), true);
     setSelectedComponent(newComp);
+    setSelectedWire(null);
     setActiveTool('select');
   };
 
@@ -482,16 +610,21 @@ export const App: React.FC = () => {
   // Carga de circuitos de ejemplo
   const handleLoadExample = (exampleId: string) => {
     handleStopSimulation();
-    if (exampleId === 'direct') setDoc(DIRECT_STARTER_CIRCUIT);
-    if (exampleId === 'star_delta') setDoc(STAR_DELTA_CIRCUIT);
-    if (exampleId === 'reverse') setDoc(REVERSE_STARTER_CIRCUIT);
-    if (exampleId === 'conveyor') setDoc(CONVEYOR_BELT_CIRCUIT);
-    if (exampleId === 'water_tank') setDoc(WATER_TANK_PUMP_CIRCUIT);
+    let nextCircuit = DIRECT_STARTER_CIRCUIT;
+    if (exampleId === 'direct') nextCircuit = DIRECT_STARTER_CIRCUIT;
+    if (exampleId === 'star_delta') nextCircuit = STAR_DELTA_CIRCUIT;
+    if (exampleId === 'reverse') nextCircuit = REVERSE_STARTER_CIRCUIT;
+    if (exampleId === 'conveyor') nextCircuit = CONVEYOR_BELT_CIRCUIT;
+    if (exampleId === 'water_tank') nextCircuit = WATER_TANK_PUMP_CIRCUIT;
+
+    updateDocWithHistory(nextCircuit, true);
+    setSelectedComponent(null);
+    setSelectedWire(null);
   };
 
   const handleNewDocument = () => {
     handleStopSimulation();
-    setDoc({
+    updateDocWithHistory({
       version: '1.0.0',
       gridSize: 20,
       titleBlock: {
@@ -507,7 +640,9 @@ export const App: React.FC = () => {
       components: [],
       wires: [],
       junctions: []
-    });
+    }, true);
+    setSelectedComponent(null);
+    setSelectedWire(null);
   };
 
   // Asegurar que la ventana nunca tenga scroll desfasado
@@ -519,6 +654,12 @@ export const App: React.FC = () => {
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-[#f0f2f5] text-slate-800 font-sans">
       {/* 1. Barra de Menús Superior */}
       <MenuBar
+        canUndo={pastDocs.length > 0}
+        canRedo={futureDocs.length > 0}
+        hasSelection={!!selectedComponent || !!selectedWire}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        onDeleteSelection={handleDeleteSelection}
         onNew={handleNewDocument}
         onOpen={handleDirectOpen}
         onSave={handleDirectSave}
@@ -533,6 +674,12 @@ export const App: React.FC = () => {
       <ToolBar
         activeTool={activeTool}
         simulationMode={simulationState.mode}
+        canUndo={pastDocs.length > 0}
+        canRedo={futureDocs.length > 0}
+        hasSelection={!!selectedComponent || !!selectedWire}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        onDeleteSelection={handleDeleteSelection}
         onSetTool={handleSetTool}
         onNew={handleNewDocument}
         onOpen={handleDirectOpen}
@@ -576,9 +723,19 @@ export const App: React.FC = () => {
           simulationState={simulationState}
           activeWireType={selectedWireType}
           activeTool={activeTool}
+          selectedWireId={selectedWire?.id || null}
           onSetTool={handleSetTool}
-          onUpdateDocument={setDoc}
-          onComponentSelect={setSelectedComponent}
+          onUpdateDocument={(newDoc, saveHistory = true, prevSnapshot) => {
+            updateDocWithHistory(newDoc, saveHistory, prevSnapshot);
+          }}
+          onComponentSelect={(c) => {
+            setSelectedComponent(c);
+            if (c) setSelectedWire(null);
+          }}
+          onWireSelect={(w) => {
+            setSelectedWire(w);
+            if (w) setSelectedComponent(null);
+          }}
           onComponentEdit={setEditingComponent}
           onCoordinatesChange={(x, y) => setCoords({ x, y })}
           onToggleBreaker={handleToggleBreaker}
@@ -606,42 +763,21 @@ export const App: React.FC = () => {
             >
               Restablecer
             </button>
-            {/* Selector nativo de archivos para Abrir (.cad / .json) */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".cad,.json,.txt"
-        className="hidden"
-        onChange={handleFileInputChange}
-      />
+          </div>
+        )}
 
-      {/* Notificación Toast flotante de retroalimentación limpia */}
-      {toast && (
-        <div className={`fixed bottom-10 right-6 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-lg shadow-2xl text-xs font-semibold select-none animate-in fade-in slide-in-from-bottom-3 duration-200 ${
-          toast.type === 'error'
-            ? 'bg-rose-700 text-white border border-rose-500'
-            : toast.type === 'info'
-              ? 'bg-blue-700 text-white border border-blue-500'
-              : 'bg-slate-900/95 text-emerald-400 border border-emerald-500/60 backdrop-blur-md'
-        }`}>
-          {toast.type === 'error' ? (
-            <AlertCircle className="w-4 h-4 text-white shrink-0" />
-          ) : toast.type === 'info' ? (
-            <Info className="w-4 h-4 text-white shrink-0" />
-          ) : (
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          )}
-          <span>{toast.message}</span>
-        </div>
-      )}
-    </div>
+        {/* Alerta crítica de cortocircuito franco */}
+        {shortCircuitAlert && (
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 px-4 py-2 bg-red-700 text-white text-xs font-black rounded-lg shadow-2xl border-2 border-amber-400 animate-bounce select-none">
+            <AlertOctagon className="w-5 h-5 text-amber-300 shrink-0" />
+            <span>{shortCircuitAlert}</span>
+          </div>
         )}
 
         {/* Gemelo Digital 2D de Planta Virtual (tipo PC_SIMU) */}
         <DigitalTwinPlant
           simulationState={simulationState}
           onPressButton={(btnKey, isPressed) => {
-            // Localizar botón de marcha o parada en el documento actual
             const targets = doc.components.filter(c => {
               if (btnKey === 'btn_start') {
                 return (
@@ -670,7 +806,6 @@ export const App: React.FC = () => {
             if (targets.length > 0) {
               targets.forEach(target => handlePressButton(target.id, isPressed));
             } else {
-              // Búsqueda de respaldo si no hay coincidencia exacta de tag
               const fallback = doc.components.find(c => 
                 btnKey === 'btn_start' 
                   ? c.type === 'button_no' 
@@ -698,35 +833,7 @@ export const App: React.FC = () => {
           onClose={() => setIsMeterOpen(false)}
           activeFaults={activeFaults}
         />
-        {/* Selector nativo de archivos para Abrir (.cad / .json) */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".cad,.json,.txt"
-        className="hidden"
-        onChange={handleFileInputChange}
-      />
-
-      {/* Notificación Toast flotante de retroalimentación limpia */}
-      {toast && (
-        <div className={`fixed bottom-10 right-6 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-lg shadow-2xl text-xs font-semibold select-none animate-in fade-in slide-in-from-bottom-3 duration-200 ${
-          toast.type === 'error'
-            ? 'bg-rose-700 text-white border border-rose-500'
-            : toast.type === 'info'
-              ? 'bg-blue-700 text-white border border-blue-500'
-              : 'bg-slate-900/95 text-emerald-400 border border-emerald-500/60 backdrop-blur-md'
-        }`}>
-          {toast.type === 'error' ? (
-            <AlertCircle className="w-4 h-4 text-white shrink-0" />
-          ) : toast.type === 'info' ? (
-            <Info className="w-4 h-4 text-white shrink-0" />
-          ) : (
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          )}
-          <span>{toast.message}</span>
-        </div>
-      )}
-    </div>
+      </div>
 
       {/* 5. Barra de Estado Inferior */}
       <StatusBar
@@ -745,10 +852,10 @@ export const App: React.FC = () => {
           isOpen={!!editingComponent}
           onClose={() => setEditingComponent(null)}
           onSave={updated => {
-            setDoc(prev => ({
+            updateDocWithHistory(prev => ({
               ...prev,
               components: prev.components.map(c => c.id === updated.id ? updated : c)
-            }));
+            }), true);
           }}
         />
       )}
@@ -760,7 +867,7 @@ export const App: React.FC = () => {
           onClose={() => setIsImportExportOpen(false)}
           onImportDocument={newDoc => {
             handleStopSimulation();
-            setDoc(newDoc);
+            updateDocWithHistory(newDoc, true);
           }}
         />
       )}
@@ -802,6 +909,7 @@ export const App: React.FC = () => {
         onOpenMultimeter={() => setIsMeterOpen(true)}
         simulationState={simulationState}
       />
+
       {/* Selector nativo de archivos para Abrir (.cad / .json) */}
       <input
         ref={fileInputRef}
