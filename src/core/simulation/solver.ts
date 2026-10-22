@@ -37,6 +37,14 @@ export class CircuitSolver {
     this.activeFaults = new Set(faults);
   }
 
+  public setComponents(components: PlacedComponent[]) {
+    this.components = components;
+  }
+
+  public setWires(wires: WireSegment[]) {
+    this.wires = wires;
+  }
+
   public step(
     currentState: SimulationState,
     deltaTimeMs: number
@@ -96,7 +104,8 @@ export class CircuitSolver {
             const isEnergized = (isLiveA1 && isNeutralA2) || (isLiveA2 && isNeutralA1);
 
             if (isEnergized) {
-              if (comp.tag === '-KM1' && this.activeFaults.has('open_coil_km1')) {
+              const isOpenCoil = this.activeFaults.has('open_coil_km1') || this.activeFaults.has('bobina_abierta');
+              if (comp.tag === '-KM1' && isOpenCoil) {
                 // Falla: Bobina de contactor -KM1 abierta/cortada internamente (A1-A2 = O.L)
                 // Hay tensión en bornes pero no genera campo magnético ni atraca la armadura
               } else {
@@ -248,8 +257,10 @@ export class CircuitSolver {
             hasError: false
           };
 
-          // Suavizado inercial de rotación
-          const currentRpm = currentMotor.rpm + (targetRpm - currentMotor.rpm) * 0.2;
+          // Suavizado inercial de rotación (frenado rápido cuando targetRpm es 0)
+          const currentRpm = targetRpm === 0
+            ? (currentMotor.rpm > 10 ? currentMotor.rpm * 0.4 : 0)
+            : currentMotor.rpm + (targetRpm - currentMotor.rpm) * 0.2;
           const deltaAngle = (currentRpm / 60) * 360 * (deltaTimeMs / 1000) * direction;
           const newAngle = (currentMotor.angle + deltaAngle) % 360;
 
@@ -333,16 +344,26 @@ export class CircuitSolver {
 
     // A. Conectar extremos de cables que coinciden en coordenadas
     const wireMap = new Map<string, WireSegment>();
+    const isL1Cut = this.activeFaults.has('phase_loss_l1') || this.activeFaults.has('corte_fase_l1');
+    const isL2Cut = this.activeFaults.has('phase_loss_l2') || this.activeFaults.has('corte_fase_l2') || this.activeFaults.has('fase_cortada');
+    const isL3Cut = this.activeFaults.has('phase_loss_l3') || this.activeFaults.has('corte_fase_l3');
+
     for (const wire of this.wires) {
+      // Simular corte de conductor en fase L1
+      if (isL1Cut) {
+        if (wire.id === 'w_p1' || wire.id === 'w_p4' || wire.id === 'w_p7' || wire.id === 'w_p10' || wire.id === 'w_conv_p4' || (wire.wireType === 'phase1' && (wire.fromY >= 6 || wire.toY >= 6))) {
+          continue; // Cable interrumpido
+        }
+      }
       // Simular corte de conductor en fase L2 (asimetría de tensiones y sobreintensidad)
-      if (this.activeFaults.has('phase_loss_l2')) {
-        if (wire.id === 'w_p5' || wire.id === 'w_p8' || wire.id === 'w_p11' || (wire.wireType === 'phase2' && (wire.fromY >= 8 || wire.toY >= 8))) {
+      if (isL2Cut) {
+        if (wire.id === 'w_p2' || wire.id === 'w_p5' || wire.id === 'w_p8' || wire.id === 'w_p11' || wire.id === 'w_conv_p5' || (wire.wireType === 'phase2' && (wire.fromY >= 6 || wire.toY >= 6))) {
           continue; // Cable interrumpido
         }
       }
       // Simular corte de conductor en fase L3
-      if (this.activeFaults.has('phase_loss_l3')) {
-        if (wire.id === 'w_p6' || wire.id === 'w_p9' || wire.id === 'w_p12' || (wire.wireType === 'phase3' && (wire.fromY >= 8 || wire.toY >= 8))) {
+      if (isL3Cut) {
+        if (wire.id === 'w_p3' || wire.id === 'w_p6' || wire.id === 'w_p9' || wire.id === 'w_p12' || wire.id === 'w_conv_p6' || (wire.wireType === 'phase3' && (wire.fromY >= 6 || wire.toY >= 6))) {
           continue; // Cable interrumpido
         }
       }
@@ -368,7 +389,8 @@ export class CircuitSolver {
 
       // Contactores principales 3P
       if (comp.type === 'contactor_power_3p') {
-        const isClosed = state.activeCoils.has(comp.tag);
+        const isWelded = this.activeFaults.has('welded_contact_km1') || this.activeFaults.has('contacto_soldado') || this.activeFaults.has('welded_contact');
+        const isClosed = state.activeCoils.has(comp.tag) || (comp.tag === '-KM1' && isWelded);
         if (isClosed) {
           const p1 = getPin('1'); const p2 = getPin('2');
           const p3 = getPin('3'); const p4 = getPin('4');
@@ -405,8 +427,9 @@ export class CircuitSolver {
 
       // Contactos auxiliares NA (13-14) o contacto térmico NA (97-98)
       if (comp.type === 'contact_no' || comp.type === 'thermal_contact_no') {
+        const isWelded = this.activeFaults.has('welded_contact_km1') || this.activeFaults.has('contacto_soldado') || this.activeFaults.has('welded_contact');
         const isClosed = comp.type === 'contact_no' 
-          ? state.activeCoils.has(comp.tag)
+          ? (state.activeCoils.has(comp.tag) || (comp.tag === '-KM1' && isWelded))
           : this.activeFaults.has('thermal_overload'); // contacto térmico 97-98 cierra en fallo
         if (isClosed) {
           const p13 = getPin(def.pins[0].id);

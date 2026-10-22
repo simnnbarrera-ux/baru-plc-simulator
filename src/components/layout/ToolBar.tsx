@@ -93,14 +93,14 @@ export const ToolBar: React.FC<Props> = ({
       </button>
       <button
         onClick={onOpen}
-        title="Abrir Esquema"
+        title="Abrir Archivo de Esquema (.cad / .json)"
         className="p-1.5 rounded text-slate-700 hover:text-slate-900 hover:bg-slate-200 transition-colors"
       >
         <FolderOpen className="w-4 h-4" />
       </button>
       <button
         onClick={onSave}
-        title="Guardar Esquema"
+        title="Guardar Esquema en Disco (*.cad)"
         className="p-1.5 rounded text-slate-700 hover:text-slate-900 hover:bg-slate-200 transition-colors"
       >
         <Save className="w-4 h-4" />

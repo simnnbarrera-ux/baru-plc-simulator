@@ -26,7 +26,8 @@ import { FaultInjectorModal } from './components/tools/FaultInjectorModal';
 import { FaultId, FAULT_CATALOG, ExamSession } from './types/faults';
 import { COMPONENT_CATALOG } from './core/components/catalog';
 import { soundEffects } from './core/simulation/soundEffects';
-import { AlertOctagon } from 'lucide-react';
+import { CadParser } from './core/format/cadParser';
+import { AlertOctagon, CheckCircle2, AlertCircle, Info } from 'lucide-react';
 
 export const App: React.FC = () => {
   // Estado del documento esquemático (iniciado con el arranque directo trifásico interactivo)
@@ -80,10 +81,103 @@ export const App: React.FC = () => {
   // Coordenadas actuales del ratón
   const [coords, setCoords] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  // Referencias a lienzo y solver
+  // Referencias a lienzo, solver y selector de archivos
   const canvasRef = useRef<SchematicCanvasRef | null>(null);
   const solverRef = useRef<CircuitSolver | null>(null);
   const plcOutputsRef = useRef<Record<string, boolean>>({});
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Sistema de notificaciones Toast no intrusivas
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  const handleSetTool = useCallback((tool: string | null) => {
+    setActiveTool(tool);
+    if (tool === 'wire' && !selectedWireType) {
+      setSelectedWireType('phase1');
+    }
+  }, [selectedWireType]);
+
+  // Apertura directa con selector nativo de archivos del sistema operativo
+  const handleDirectOpen = useCallback(() => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
+  }, []);
+
+  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const text = event.target?.result as string;
+        if (file.name.endsWith('.json')) {
+          const parsed = JSON.parse(text);
+          setSimulationState(prev => ({ ...prev, mode: 'stopped' }));
+          setDoc(parsed);
+          showToast(`Esquema cargado: ${file.name} (${parsed.components?.length || 0} componentes)`, 'success');
+          setTimeout(() => canvasRef.current?.fitToScreen(), 150);
+        } else {
+          const parsed = CadParser.parse(text);
+          setSimulationState(prev => ({ ...prev, mode: 'stopped' }));
+          setDoc(parsed);
+          showToast(`Esquema CADe_SIMU cargado: ${file.name} (${parsed.components?.length || 0} componentes)`, 'success');
+          setTimeout(() => canvasRef.current?.fitToScreen(), 150);
+        }
+      } catch (err: any) {
+        showToast(`Error al abrir archivo: ${err.message || 'Formato no reconocido'}`, 'error');
+      }
+    };
+    reader.readAsText(file);
+  }, [showToast]);
+
+  // Guardado directo sin modal confuso (descarga directa del archivo .cad)
+  const handleDirectSave = useCallback(() => {
+    try {
+      const cadText = CadParser.export(doc);
+      const blob = new Blob([cadText], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeTitle = (doc.titleBlock?.title || 'esquema').replace(/[^a-zA-Z0-9_\-]/g, '_');
+      const filename = `${safeTitle}.cad`;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast(`Esquema guardado exitosamente como "${filename}"`, 'success');
+    } catch (err: any) {
+      showToast(`Error al guardar: ${err.message}`, 'error');
+    }
+  }, [doc, showToast]);
+
+  const handleExportCad = useCallback(() => {
+    handleDirectSave();
+  }, [handleDirectSave]);
+
+  const handleExportJson = useCallback(() => {
+    try {
+      const jsonText = JSON.stringify(doc, null, 2);
+      const blob = new Blob([jsonText], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeTitle = (doc.titleBlock?.title || 'esquema').replace(/[^a-zA-Z0-9_\-]/g, '_');
+      const filename = `${safeTitle}.json`;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast(`Esquema exportado como JSON ("${filename}")`, 'success');
+    } catch (err: any) {
+      showToast(`Error al exportar JSON: ${err.message}`, 'error');
+    }
+  }, [doc, showToast]);
 
   useEffect(() => {
     solverRef.current = new CircuitSolver(doc.components, doc.wires, doc.junctions, activeFaults);
@@ -331,9 +425,9 @@ export const App: React.FC = () => {
 
   // Interacción en Simulación: Pulsar/Soltar botón
   const handlePressButton = (compId: string, isPressed: boolean) => {
-    setDoc(prev => ({
-      ...prev,
-      components: prev.components.map(c => {
+    soundEffects.playTripClick();
+    setDoc(prev => {
+      const nextComponents = prev.components.map(c => {
         if (c.id === compId) {
           return {
             ...c,
@@ -341,8 +435,19 @@ export const App: React.FC = () => {
           };
         }
         return c;
-      })
-    }));
+      });
+      if (solverRef.current) {
+        solverRef.current.setComponents(nextComponents);
+      }
+      return {
+        ...prev,
+        components: nextComponents
+      };
+    });
+
+    if (solverRef.current && simulationState.mode === 'running') {
+      setSimulationState(prev => solverRef.current!.step(prev, 16));
+    }
   };
 
   // Selección de componentes desde la Ribbon
@@ -415,26 +520,23 @@ export const App: React.FC = () => {
       {/* 1. Barra de Menús Superior */}
       <MenuBar
         onNew={handleNewDocument}
-        onOpen={() => setIsImportExportOpen(true)}
-        onSave={() => setIsImportExportOpen(true)}
-        onExportCad={() => setIsImportExportOpen(true)}
-        onExportJson={() => setIsImportExportOpen(true)}
+        onOpen={handleDirectOpen}
+        onSave={handleDirectSave}
+        onExportCad={handleExportCad}
+        onExportJson={handleExportJson}
         onLoadExample={handleLoadExample}
-        onStartSimulation={handleStartSimulation}
-        onStopSimulation={handleStopSimulation}
-        isSimulating={simulationState.mode === 'running'}
         onAbout={() => setIsAboutOpen(true)}
-        onOpenLadder={() => setIsLadderOpen(true)}
+        onOpenAdvanced={() => setIsImportExportOpen(true)}
       />
 
       {/* 2. Barra de Acciones y Controles Rápidos */}
       <ToolBar
         activeTool={activeTool}
         simulationMode={simulationState.mode}
-        onSetTool={setActiveTool}
+        onSetTool={handleSetTool}
         onNew={handleNewDocument}
-        onOpen={() => setIsImportExportOpen(true)}
-        onSave={() => setIsImportExportOpen(true)}
+        onOpen={handleDirectOpen}
+        onSave={handleDirectSave}
         onStartSimulation={handleStartSimulation}
         onStopSimulation={handleStopSimulation}
         onPauseSimulation={handlePauseSimulation}
@@ -450,6 +552,10 @@ export const App: React.FC = () => {
         onToggleMeter={() => setIsMeterOpen(!isMeterOpen)}
         isLadderOpen={isLadderOpen}
         onToggleLadder={() => setIsLadderOpen(!isLadderOpen)}
+        isFaultsOpen={isFaultsOpen}
+        onToggleFaults={() => setIsFaultsOpen(!isFaultsOpen)}
+        hasActiveFault={activeFaults.size > 0}
+        isExamActive={examSession.isActive}
         onOpenReport={() => setIsReportOpen(true)}
       />
 
@@ -470,6 +576,7 @@ export const App: React.FC = () => {
           simulationState={simulationState}
           activeWireType={selectedWireType}
           activeTool={activeTool}
+          onSetTool={handleSetTool}
           onUpdateDocument={setDoc}
           onComponentSelect={setSelectedComponent}
           onComponentEdit={setEditingComponent}
@@ -478,16 +585,98 @@ export const App: React.FC = () => {
           onPressButton={handlePressButton}
         />
 
+        {/* Indicador Flotante de Averías Inyectadas en el Circuito */}
+        {activeFaults.size > 0 && !examSession.isActive && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-1.5 bg-rose-600/95 backdrop-blur-xs text-white text-xs font-bold rounded-full shadow-xl border border-rose-400 animate-in fade-in duration-200 select-none">
+            <AlertOctagon className="w-4 h-4 text-amber-300 animate-pulse shrink-0" />
+            <span>
+              {activeFaults.size === 1
+                ? `Avería Activa: ${Array.from(activeFaults).map(f => FAULT_CATALOG.find(cat => cat.id === f)?.shortName || f).join(', ')}`
+                : `${activeFaults.size} Averías Activas en Simulación`}
+            </span>
+            <button
+              onClick={() => setIsFaultsOpen(true)}
+              className="px-2 py-0.5 ml-1 bg-white hover:bg-slate-100 text-rose-700 text-[11px] font-extrabold rounded-md shadow-2xs transition-colors cursor-pointer"
+            >
+              Inspeccionar
+            </button>
+            <button
+              onClick={handleResetFaults}
+              className="px-2 py-0.5 bg-rose-800 hover:bg-rose-900 text-rose-100 text-[11px] rounded-md transition-colors cursor-pointer"
+            >
+              Restablecer
+            </button>
+            {/* Selector nativo de archivos para Abrir (.cad / .json) */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".cad,.json,.txt"
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
+
+      {/* Notificación Toast flotante de retroalimentación limpia */}
+      {toast && (
+        <div className={`fixed bottom-10 right-6 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-lg shadow-2xl text-xs font-semibold select-none animate-in fade-in slide-in-from-bottom-3 duration-200 ${
+          toast.type === 'error'
+            ? 'bg-rose-700 text-white border border-rose-500'
+            : toast.type === 'info'
+              ? 'bg-blue-700 text-white border border-blue-500'
+              : 'bg-slate-900/95 text-emerald-400 border border-emerald-500/60 backdrop-blur-md'
+        }`}>
+          {toast.type === 'error' ? (
+            <AlertCircle className="w-4 h-4 text-white shrink-0" />
+          ) : toast.type === 'info' ? (
+            <Info className="w-4 h-4 text-white shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          )}
+          <span>{toast.message}</span>
+        </div>
+      )}
+    </div>
+        )}
+
         {/* Gemelo Digital 2D de Planta Virtual (tipo PC_SIMU) */}
         <DigitalTwinPlant
           simulationState={simulationState}
           onPressButton={(btnKey, isPressed) => {
-            const target = doc.components.find(c => 
-              (btnKey === 'btn_start' && (c.id === 'btn_start' || c.type === 'button_no')) ||
-              (btnKey === 'btn_stop' && (c.id === 'btn_stop' || c.type === 'button_nc'))
-            );
-            if (target) {
-              handlePressButton(target.id, isPressed);
+            // Localizar botón de marcha o parada en el documento actual
+            const targets = doc.components.filter(c => {
+              if (btnKey === 'btn_start') {
+                return (
+                  c.id === 'btn_start' ||
+                  c.id === 'btn_start_cw' ||
+                  c.tag === '-S1' ||
+                  c.tag === 'I' ||
+                  (c.type === 'button_no' && (c.tag === '-S1' || c.tag === 'I' || c.tag.includes('1')))
+                );
+              }
+              if (btnKey === 'btn_stop') {
+                return (
+                  c.id === 'btn_stop' ||
+                  c.id === 'btn_es' ||
+                  c.tag === '-S0' ||
+                  c.tag === '-S2' ||
+                  c.tag === 'O' ||
+                  c.type === 'button_nc' ||
+                  c.type === 'emergency_stop' ||
+                  (c.tag && (c.tag.toLowerCase().includes('stop') || c.tag.toLowerCase().includes('parada')))
+                );
+              }
+              return false;
+            });
+
+            if (targets.length > 0) {
+              targets.forEach(target => handlePressButton(target.id, isPressed));
+            } else {
+              // Búsqueda de respaldo si no hay coincidencia exacta de tag
+              const fallback = doc.components.find(c => 
+                btnKey === 'btn_start' 
+                  ? c.type === 'button_no' 
+                  : (c.type === 'button_nc' || c.type === 'emergency_stop')
+              );
+              if (fallback) handlePressButton(fallback.id, isPressed);
             }
           }}
           isOpen={isTwinOpen}
@@ -497,6 +686,7 @@ export const App: React.FC = () => {
         {/* Analizador Lógico & Cronograma de Señales */}
         <TimingDiagram
           simulationState={simulationState}
+          document={doc}
           isOpen={isTimingOpen}
           onClose={() => setIsTimingOpen(false)}
         />
@@ -506,8 +696,37 @@ export const App: React.FC = () => {
           simulationState={simulationState}
           isOpen={isMeterOpen}
           onClose={() => setIsMeterOpen(false)}
+          activeFaults={activeFaults}
         />
-      </div>
+        {/* Selector nativo de archivos para Abrir (.cad / .json) */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".cad,.json,.txt"
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
+
+      {/* Notificación Toast flotante de retroalimentación limpia */}
+      {toast && (
+        <div className={`fixed bottom-10 right-6 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-lg shadow-2xl text-xs font-semibold select-none animate-in fade-in slide-in-from-bottom-3 duration-200 ${
+          toast.type === 'error'
+            ? 'bg-rose-700 text-white border border-rose-500'
+            : toast.type === 'info'
+              ? 'bg-blue-700 text-white border border-blue-500'
+              : 'bg-slate-900/95 text-emerald-400 border border-emerald-500/60 backdrop-blur-md'
+        }`}>
+          {toast.type === 'error' ? (
+            <AlertCircle className="w-4 h-4 text-white shrink-0" />
+          ) : toast.type === 'info' ? (
+            <Info className="w-4 h-4 text-white shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          )}
+          <span>{toast.message}</span>
+        </div>
+      )}
+    </div>
 
       {/* 5. Barra de Estado Inferior */}
       <StatusBar
@@ -568,6 +787,49 @@ export const App: React.FC = () => {
         simulationState={simulationState}
         onUpdatePlcOutputs={handlePlcOutputsChange}
       />
+
+      {/* Inyector & Diagnóstico Didáctico de Averías Eléctricas y Modo Examen */}
+      <FaultInjectorModal
+        isOpen={isFaultsOpen}
+        onClose={() => setIsFaultsOpen(false)}
+        activeFaults={activeFaults}
+        onToggleFault={handleToggleFault}
+        onResetFaults={handleResetFaults}
+        examSession={examSession}
+        onStartExam={handleStartExam}
+        onSubmitExamAnswer={handleSubmitExamAnswer}
+        onResetExam={handleResetExam}
+        onOpenMultimeter={() => setIsMeterOpen(true)}
+        simulationState={simulationState}
+      />
+      {/* Selector nativo de archivos para Abrir (.cad / .json) */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".cad,.json,.txt"
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
+
+      {/* Notificación Toast flotante de retroalimentación limpia */}
+      {toast && (
+        <div className={`fixed bottom-10 right-6 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-lg shadow-2xl text-xs font-semibold select-none animate-in fade-in slide-in-from-bottom-3 duration-200 ${
+          toast.type === 'error'
+            ? 'bg-rose-700 text-white border border-rose-500'
+            : toast.type === 'info'
+              ? 'bg-blue-700 text-white border border-blue-500'
+              : 'bg-slate-900/95 text-emerald-400 border border-emerald-500/60 backdrop-blur-md'
+        }`}>
+          {toast.type === 'error' ? (
+            <AlertCircle className="w-4 h-4 text-white shrink-0" />
+          ) : toast.type === 'info' ? (
+            <Info className="w-4 h-4 text-white shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          )}
+          <span>{toast.message}</span>
+        </div>
+      )}
     </div>
   );
 };

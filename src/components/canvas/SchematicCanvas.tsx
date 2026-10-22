@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { PlacedComponent, WireSegment, CircuitDocument, WireType } from '../../types/circuit';
 import { SimulationState } from '../../types/simulation';
+import { COMPONENT_CATALOG } from '../../core/components/catalog';
 import { ComponentRenderer } from './ComponentRenderer';
 import { WireRenderer } from './WireRenderer';
 import { TitleBlock } from './TitleBlock';
@@ -20,11 +21,21 @@ export interface SchematicCanvasRef {
   fitToScreen: () => void;
 }
 
+export interface SnapPoint {
+  x: number;
+  y: number;
+  type: 'pin' | 'wire_terminal' | 'junction';
+  id: string;
+  label?: string;
+  componentTag?: string;
+}
+
 interface Props {
   document: CircuitDocument;
   simulationState: SimulationState;
   activeWireType: WireType | null;
   activeTool: 'select' | 'wire' | 'delete' | string | null;
+  onSetTool?: (tool: string | null) => void;
   onUpdateDocument: (doc: CircuitDocument) => void;
   onComponentSelect: (comp: PlacedComponent | null) => void;
   onComponentEdit: (comp: PlacedComponent) => void;
@@ -38,6 +49,7 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   simulationState,
   activeWireType,
   activeTool,
+  onSetTool,
   onUpdateDocument,
   onComponentSelect,
   onComponentEdit,
@@ -65,9 +77,109 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   const [draggingCompId, setDraggingCompId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  // Trazado interactivo de cables
+  // Trazado interactivo de cables y snapping estricto
   const [wireStart, setWireStart] = useState<{ x: number; y: number } | null>(null);
+  const [hoveredSnap, setHoveredSnap] = useState<SnapPoint | null>(null);
   const [mouseGridPos, setMouseGridPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const isWiringMode = activeTool === 'wire' || (typeof activeTool === 'string' && activeTool.startsWith('wire'));
+  const effectiveWireType: WireType = activeWireType || 'phase1';
+
+  // Si salimos del modo cableado, cancelar inmediatamente cualquier cable pendiente
+  useEffect(() => {
+    if (!isWiringMode) {
+      setWireStart(null);
+      setHoveredSnap(null);
+    }
+  }, [isWiringMode]);
+
+  // Recopilar todos los puntos de conexión válidos del esquema (pines, extremos de cables, uniones)
+  const getSnapPoints = useCallback((): SnapPoint[] => {
+    const points: SnapPoint[] = [];
+    const seen = new Set<string>();
+
+    // 1. Pines de componentes colocados
+    for (const comp of document.components) {
+      const def = COMPONENT_CATALOG.find(c => c.type === comp.type);
+      if (!def) continue;
+
+      for (const pin of def.pins) {
+        let px = pin.relX;
+        let py = pin.relY;
+
+        if (comp.rotation === 90) {
+          const oldX = px;
+          px = def.height - py;
+          py = oldX;
+        } else if (comp.rotation === 180) {
+          px = def.width - px;
+          py = def.height - py;
+        } else if (comp.rotation === 270) {
+          const oldX = px;
+          px = py;
+          py = def.width - oldX;
+        }
+
+        const worldX = comp.x + px;
+        const worldY = comp.y + py;
+        const key = `${worldX},${worldY}`;
+        seen.add(key);
+
+        points.push({
+          x: worldX,
+          y: worldY,
+          type: 'pin',
+          id: `${comp.id}_${pin.id}`,
+          label: `${comp.tag}:${pin.label}`,
+          componentTag: comp.tag
+        });
+      }
+    }
+
+    // 2. Extremos de cables existentes
+    for (const wire of document.wires) {
+      const kFrom = `${wire.fromX},${wire.fromY}`;
+      if (!seen.has(kFrom)) {
+        seen.add(kFrom);
+        points.push({
+          x: wire.fromX,
+          y: wire.fromY,
+          type: 'wire_terminal',
+          id: `wire_${wire.id}_from`,
+          label: 'Terminal'
+        });
+      }
+
+      const kTo = `${wire.toX},${wire.toY}`;
+      if (!seen.has(kTo)) {
+        seen.add(kTo);
+        points.push({
+          x: wire.toX,
+          y: wire.toY,
+          type: 'wire_terminal',
+          id: `wire_${wire.id}_to`,
+          label: 'Terminal'
+        });
+      }
+    }
+
+    // 3. Nodos de unión existentes
+    for (const j of document.junctions) {
+      const kJ = `${j.x},${j.y}`;
+      if (!seen.has(kJ)) {
+        seen.add(kJ);
+        points.push({
+          x: j.x,
+          y: j.y,
+          type: 'junction',
+          id: j.id,
+          label: 'Conexión'
+        });
+      }
+    }
+
+    return points;
+  }, [document.components, document.wires, document.junctions]);
 
   // Función para ajustar el plano/circuito a la pantalla con encuadre óptimo
   const fitToScreen = useCallback(() => {
@@ -166,17 +278,40 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     };
   }, [fitToScreen]);
 
-  // Convertir coordenadas del ratón a coordenadas de la rejilla
-  const screenToGrid = useCallback((clientX: number, clientY: number) => {
-    if (!containerRef.current) return { x: 0, y: 0 };
+  // Convertir coordenadas del ratón a coordenadas de la rejilla (flotante y entera)
+  const screenToGridRaw = useCallback((clientX: number, clientY: number) => {
+    if (!containerRef.current) return { rawGridX: 0, rawGridY: 0, gridX: 0, gridY: 0 };
     const rect = containerRef.current.getBoundingClientRect();
     const rawX = (clientX - rect.left - pan.x) / zoom;
     const rawY = (clientY - rect.top - pan.y) / zoom;
     return {
-      x: Math.round(rawX / gridSize),
-      y: Math.round(rawY / gridSize)
+      rawGridX: rawX / gridSize,
+      rawGridY: rawY / gridSize,
+      gridX: Math.round(rawX / gridSize),
+      gridY: Math.round(rawY / gridSize)
     };
   }, [pan, zoom, gridSize]);
+
+  const screenToGrid = useCallback((clientX: number, clientY: number) => {
+    const { gridX, gridY } = screenToGridRaw(clientX, clientY);
+    return { x: gridX, y: gridY };
+  }, [screenToGridRaw]);
+
+  // Buscar el punto de conexión válido más próximo al cursor
+  const findNearestSnapPoint = useCallback((rawGridX: number, rawGridY: number, maxDist: number = 0.95): SnapPoint | null => {
+    const points = getSnapPoints();
+    let nearest: SnapPoint | null = null;
+    let minDist = maxDist;
+
+    for (const pt of points) {
+      const dist = Math.hypot(pt.x - rawGridX, pt.y - rawGridY);
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = pt;
+      }
+    }
+    return nearest;
+  }, [getSnapPoints]);
 
   // Manejo de Zoom con rueda del ratón hacia el punto del cursor
   const handleWheel = (e: React.WheelEvent) => {
@@ -244,6 +379,71 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     fitToScreen
   }), [zoomIn, zoomOut, resetZoom, fitToScreen]);
 
+  // Manejo de conexión de cables con verificación estricta de terminales
+  const handleSnapClick = (e: React.MouseEvent) => {
+    if (!isWiringMode) return;
+    const { rawGridX, rawGridY } = screenToGridRaw(e.clientX, e.clientY);
+    const snap = findNearestSnapPoint(rawGridX, rawGridY, 0.95);
+
+    // REGLA ESTRICTA: No permitir colocar cables en el vacío. Sólo desde terminal/pin válido.
+    if (!snap) {
+      return;
+    }
+
+    if (!wireStart) {
+      // Iniciar el trazado desde este pin o terminal
+      setWireStart({ x: snap.x, y: snap.y });
+    } else {
+      // Finalizar el trazado: SOLO en un segundo pin/terminal/nodo diferente
+      if (wireStart.x === snap.x && wireStart.y === snap.y) {
+        return; // Clic en el mismo punto de origen: ignorar
+      }
+
+      const newWires: WireSegment[] = [];
+
+      // Si los puntos coinciden en X o Y, crear un único segmento recto
+      if (wireStart.x === snap.x || wireStart.y === snap.y) {
+        newWires.push({
+          id: `wire_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          fromX: wireStart.x,
+          fromY: wireStart.y,
+          toX: snap.x,
+          toY: snap.y,
+          wireType: effectiveWireType
+        });
+      } else {
+        // Si están en diagonal, crear trazado ortogonal limpio (2 tramos en ángulo recto)
+        const cornerX = snap.x;
+        const cornerY = wireStart.y;
+        const idBase = Date.now();
+        newWires.push({
+          id: `wire_${idBase}_1`,
+          fromX: wireStart.x,
+          fromY: wireStart.y,
+          toX: cornerX,
+          toY: cornerY,
+          wireType: effectiveWireType
+        });
+        newWires.push({
+          id: `wire_${idBase}_2`,
+          fromX: cornerX,
+          fromY: cornerY,
+          toX: snap.x,
+          toY: snap.y,
+          wireType: effectiveWireType
+        });
+      }
+
+      onUpdateDocument({
+        ...document,
+        wires: [...document.wires, ...newWires]
+      });
+
+      // Finalizar trazado actual
+      setWireStart(null);
+    }
+  };
+
   // Manejo de eventos de ratón
   const handleMouseDown = (e: React.MouseEvent) => {
     // 1. Panning con Botón Secundario (Clic derecho), Botón Central (Rueda), Espacio o Modo Mano
@@ -255,30 +455,9 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
 
     if (e.button !== 0) return;
 
-    const gridPos = screenToGrid(e.clientX, e.clientY);
-
-    // Herramienta de cableado
-    if (activeTool === 'wire' && activeWireType) {
-      if (!wireStart) {
-        setWireStart(gridPos);
-      } else {
-        if (wireStart.x !== gridPos.x || wireStart.y !== gridPos.y) {
-          const newWire: WireSegment = {
-            id: `wire_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-            fromX: wireStart.x,
-            fromY: wireStart.y,
-            toX: gridPos.x,
-            toY: gridPos.y,
-            wireType: activeWireType
-          };
-
-          onUpdateDocument({
-            ...document,
-            wires: [...document.wires, newWire]
-          });
-        }
-        setWireStart(gridPos);
-      }
+    // Si estamos en modo cableado, resolver click de conexión con snapping
+    if (isWiringMode) {
+      handleSnapClick(e);
       return;
     }
 
@@ -299,18 +478,25 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       return;
     }
 
-    const gridPos = screenToGrid(e.clientX, e.clientY);
-    setMouseGridPos(gridPos);
-    onCoordinatesChange(gridPos.x, gridPos.y);
+    const { rawGridX, rawGridY, gridX, gridY } = screenToGridRaw(e.clientX, e.clientY);
+    setMouseGridPos({ x: gridX, y: gridY });
+    onCoordinatesChange(gridX, gridY);
 
-    // Arrastre de componentes
-    if (draggingCompId && simulationState.mode === 'stopped') {
+    if (isWiringMode) {
+      const snap = findNearestSnapPoint(rawGridX, rawGridY, 0.95);
+      setHoveredSnap(snap);
+    } else if (hoveredSnap) {
+      setHoveredSnap(null);
+    }
+
+    // Arrastre de componentes (sólo fuera de modo cableado)
+    if (!isWiringMode && draggingCompId && simulationState.mode === 'stopped') {
       const updatedComps = document.components.map(c => {
         if (c.id === draggingCompId) {
           return {
             ...c,
-            x: Math.max(1, gridPos.x - dragOffset.x),
-            y: Math.max(1, gridPos.y - dragOffset.y)
+            x: Math.max(1, gridX - dragOffset.x),
+            y: Math.max(1, gridY - dragOffset.y)
           };
         }
         return c;
@@ -326,8 +512,15 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
 
   // Interacción con componentes
   const handleComponentClick = (comp: PlacedComponent, e: React.MouseEvent) => {
-    e.stopPropagation();
     if (isPanning || isPanToolActive) return;
+
+    if (isWiringMode) {
+      e.stopPropagation();
+      handleSnapClick(e);
+      return;
+    }
+
+    e.stopPropagation();
 
     if (simulationState.mode === 'running') {
       if (comp.type.startsWith('breaker_')) {
@@ -347,20 +540,21 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
 
   const handleComponentMouseDown = (comp: PlacedComponent, e: React.MouseEvent) => {
     if (isSpacePressed || isPanToolActive || e.button === 2) return;
+    if (isWiringMode) return; // En modo cableado no iniciar arrastre
     if (simulationState.mode !== 'stopped') return;
     if (e.button === 0) {
-      const gridPos = screenToGrid(e.clientX, e.clientY);
+      const { gridX, gridY } = screenToGridRaw(e.clientX, e.clientY);
       setDraggingCompId(comp.id);
       setDragOffset({
-        x: gridPos.x - comp.x,
-        y: gridPos.y - comp.y
+        x: gridX - comp.x,
+        y: gridY - comp.y
       });
       setSelectedId(comp.id);
       onComponentSelect(comp);
     }
   };
 
-  // Escucha de teclado global: Espacio para paneo, F para encuadre, Supr para borrar
+  // Escucha de teclado global: Espacio para paneo, F para encuadre, Supr para borrar, Escape para cancelar
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Espacio para Modo Mano
@@ -377,6 +571,25 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       // Atajo '0' para Reset Zoom 100%
       if (e.key === '0' && (window.document.activeElement?.tagName !== 'INPUT')) {
         resetZoom();
+      }
+
+      // Atajo 'W' para entrar en modo cableado
+      if ((e.key === 'w' || e.key === 'W') && (window.document.activeElement?.tagName !== 'INPUT')) {
+        e.preventDefault();
+        onSetTool?.('wire');
+      }
+
+      // Tecla Escape: cancela cualquier trazado activo y sale del modo cableado
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setWireStart(null);
+        setHoveredSnap(null);
+        setSelectedId(null);
+        onComponentSelect(null);
+        if (isWiringMode) {
+          onSetTool?.('select');
+        }
+        return;
       }
 
       // Atajos de componente seleccionado
@@ -400,10 +613,6 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
             return c;
           })
         });
-      } else if (e.key === 'Escape') {
-        setWireStart(null);
-        setSelectedId(null);
-        onComponentSelect(null);
       }
     };
 
@@ -419,13 +628,15 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [selectedId, document, simulationState.mode, onUpdateDocument, onComponentSelect, fitToScreen]);
+  }, [selectedId, document, simulationState.mode, isWiringMode, onUpdateDocument, onComponentSelect, onSetTool, fitToScreen]);
 
   // Determinar cursor dinámico
   const getCursorClass = () => {
     if (isPanning) return 'cursor-grabbing';
     if (isSpacePressed || isPanToolActive) return 'cursor-grab';
-    if (activeTool === 'wire') return 'cursor-crosshair';
+    if (isWiringMode) {
+      return hoveredSnap ? 'cursor-pointer' : 'cursor-crosshair';
+    }
     return 'cursor-default';
   };
 
@@ -512,19 +723,65 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
           energizedWires={simulationState.energizedWires}
         />
 
-        {/* Previsualización del cable en trazado activo */}
-        {wireStart && (
-          <line
-            x1={wireStart.x * gridSize}
-            y1={wireStart.y * gridSize}
-            x2={mouseGridPos.x * gridSize}
-            y2={mouseGridPos.y * gridSize}
-            stroke="#2563eb"
-            strokeWidth={2.5}
-            strokeDasharray="4 3"
-            className="animate-pulse"
-          />
-        )}
+        {/* Previsualización ortogonal del cable en trazado activo */}
+        {wireStart && (() => {
+          const targetX = hoveredSnap ? hoveredSnap.x : mouseGridPos.x;
+          const targetY = hoveredSnap ? hoveredSnap.y : mouseGridPos.y;
+          const isCollinear = wireStart.x === targetX || wireStart.y === targetY;
+
+          return (
+            <g className="wire-preview pointer-events-none">
+              {isCollinear ? (
+                <line
+                  x1={wireStart.x * gridSize}
+                  y1={wireStart.y * gridSize}
+                  x2={targetX * gridSize}
+                  y2={targetY * gridSize}
+                  stroke="#2563eb"
+                  strokeWidth={2.5}
+                  strokeDasharray="4 3"
+                  className="animate-pulse"
+                />
+              ) : (
+                <>
+                  <line
+                    x1={wireStart.x * gridSize}
+                    y1={wireStart.y * gridSize}
+                    x2={targetX * gridSize}
+                    y2={wireStart.y * gridSize}
+                    stroke="#2563eb"
+                    strokeWidth={2.5}
+                    strokeDasharray="4 3"
+                    className="animate-pulse"
+                  />
+                  <line
+                    x1={targetX * gridSize}
+                    y1={wireStart.y * gridSize}
+                    x2={targetX * gridSize}
+                    y2={targetY * gridSize}
+                    stroke="#2563eb"
+                    strokeWidth={2.5}
+                    strokeDasharray="4 3"
+                    className="animate-pulse"
+                  />
+                  <circle
+                    cx={targetX * gridSize}
+                    cy={wireStart.y * gridSize}
+                    r={3}
+                    className="fill-blue-600 opacity-70"
+                  />
+                </>
+              )}
+              {/* Punto de origen del cable */}
+              <circle
+                cx={wireStart.x * gridSize}
+                cy={wireStart.y * gridSize}
+                r={4.5}
+                className="fill-emerald-500 stroke-white stroke-2"
+              />
+            </g>
+          );
+        })()}
 
         {/* Capa de Componentes Eléctricos */}
         {document.components.map(comp => (
@@ -539,6 +796,62 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
           />
         ))}
 
+        {/* Capa de Puntos de Conexión (Snap targets) visible en modo cableado */}
+        {isWiringMode && (
+          <g className="snap-points-layer pointer-events-none">
+            {getSnapPoints().map(pt => {
+              const isOrigin = wireStart && wireStart.x === pt.x && wireStart.y === pt.y;
+              const isHovered = hoveredSnap && hoveredSnap.x === pt.x && hoveredSnap.y === pt.y;
+              return (
+                <g key={pt.id}>
+                  <circle
+                    cx={pt.x * gridSize}
+                    cy={pt.y * gridSize}
+                    r={isHovered ? 5.5 : 3.5}
+                    className={
+                      isOrigin
+                        ? 'fill-emerald-500 stroke-white stroke-1.5'
+                        : isHovered
+                          ? 'fill-emerald-400 stroke-emerald-600 stroke-2'
+                          : 'fill-blue-500/50 stroke-blue-700/80 stroke-1'
+                    }
+                  />
+                  {isHovered && (
+                    <>
+                      <circle
+                        cx={pt.x * gridSize}
+                        cy={pt.y * gridSize}
+                        r={9}
+                        className="fill-none stroke-emerald-500 stroke-1.5 animate-ping opacity-75"
+                      />
+                      {pt.label && (
+                        <g transform={`translate(${pt.x * gridSize}, ${pt.y * gridSize - 14})`}>
+                          <rect
+                            x={-34}
+                            y={-12}
+                            width={68}
+                            height={15}
+                            rx={3}
+                            className="fill-slate-900/90 stroke-slate-700 stroke-0.5"
+                          />
+                          <text
+                            x={0}
+                            y={-2}
+                            textAnchor="middle"
+                            className="text-[9px] font-mono font-bold fill-white select-none"
+                          >
+                            {pt.label}
+                          </text>
+                        </g>
+                      )}
+                    </>
+                  )}
+                </g>
+              );
+            })}
+          </g>
+        )}
+
         {/* Cajetín de Título DIN A4 */}
         <TitleBlock
           data={document.titleBlock}
@@ -549,12 +862,12 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
         />
 
         {/* Mira y cursor de alineación de cuadrícula */}
-        {activeTool === 'wire' && (
+        {isWiringMode && (
           <circle
-            cx={mouseGridPos.x * gridSize}
-            cy={mouseGridPos.y * gridSize}
-            r={3}
-            className="fill-blue-600 pointer-events-none animate-ping"
+            cx={(hoveredSnap ? hoveredSnap.x : mouseGridPos.x) * gridSize}
+            cy={(hoveredSnap ? hoveredSnap.y : mouseGridPos.y) * gridSize}
+            r={hoveredSnap ? 4 : 2.5}
+            className={`${hoveredSnap ? 'fill-emerald-500' : 'fill-blue-600'} pointer-events-none opacity-80`}
           />
         )}
         </g>

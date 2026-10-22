@@ -93,7 +93,8 @@ export const FaultInjectorModal: React.FC<Props> = ({
       'phase_loss_l3',
       'thermal_overload',
       'short_circuit',
-      'open_coil_km1'
+      'open_coil_km1',
+      'welded_contact_km1'
     ];
     const randomIndex = Math.floor(Math.random() * possibleFaults.length);
     const chosenFault = possibleFaults[randomIndex];
@@ -117,10 +118,11 @@ export const FaultInjectorModal: React.FC<Props> = ({
     let continuity = false;
     let desc = '';
 
-    const isL2Cut = activeFaults.has('phase_loss_l2');
+    const isL2Cut = activeFaults.has('phase_loss_l2') || activeFaults.has('fase_cortada');
     const isL3Cut = activeFaults.has('phase_loss_l3');
     const isThermalTripped = activeFaults.has('thermal_overload');
-    const isOpenCoil = activeFaults.has('open_coil_km1');
+    const isOpenCoil = activeFaults.has('open_coil_km1') || activeFaults.has('bobina_abierta');
+    const isWelded = activeFaults.has('welded_contact_km1') || activeFaults.has('contacto_soldado');
     const isKm1On = simulationState.activeCoils.has('-KM1');
 
     switch (pointKey) {
@@ -158,10 +160,24 @@ export const FaultInjectorModal: React.FC<Props> = ({
           : (volt === 230 ? '230 V AC (Bobina energizada normalmente)' : '0 V AC (Sin excitación)');
         break;
       case 'M1_TERMINALS':
-        volt = isKm1On ? (isL2Cut || isL3Cut ? 230 : 400) : 0;
-        desc = isKm1On 
+        volt = isKm1On || isWelded ? (isL2Cut || isL3Cut ? 230 : 400) : 0;
+        desc = (isKm1On || isWelded)
           ? (isL2Cut ? 'Asimetría severa en U-V-W. Motor zumbando con sobrecorriente' : '400 V AC equilibrado en motor')
           : '0 V AC (Motor desenergizado)';
+        break;
+      case 'KM1_CONTACTS':
+        continuity = isWelded;
+        volt = isWelded || isKm1On ? 400 : 0;
+        desc = isWelded
+          ? 'Contactos de potencia 1-2, 3-4, 5-6 SOLDADOS (Continuidad 0.0 Ω sin excitación). El motor no se detiene.'
+          : (isKm1On ? '400 V AC (Contactor enclavado en marcha normal)' : '0 V AC (Contactos abiertos en reposo)');
+        break;
+      case 'KM1_13_14':
+        continuity = isWelded || isKm1On;
+        volt = isSimulating && (isWelded || isKm1On) ? 230 : 0;
+        desc = isWelded
+          ? 'Contacto auxiliar 13-14 SOLDADO (Continuidad permanente, 0.0 Ω). Realimentación forzada constante.'
+          : (isKm1On ? 'Contacto 13-14 CERRADO (Bobina activa)' : 'Contacto 13-14 ABIERTO (En reposo)');
         break;
       default:
         volt = 0;
@@ -505,12 +521,56 @@ export const FaultInjectorModal: React.FC<Props> = ({
                     <button
                       onClick={() => onToggleFault('open_coil_km1')}
                       className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-bold border transition-all ${
-                        activeFaults.has('open_coil_km1')
+                        activeFaults.has('open_coil_km1') || activeFaults.has('bobina_abierta')
                           ? 'bg-purple-600 text-white border-purple-700 shadow-xs'
                           : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                       }`}
                     >
-                      {activeFaults.has('open_coil_km1') ? '✓ Bobina Abierta -KM1 (Activa)' : 'Abrir Bobina Contactor -KM1'}
+                      {activeFaults.has('open_coil_km1') || activeFaults.has('bobina_abierta') ? '✓ Bobina Abierta -KM1 (Activa)' : 'Abrir Bobina Contactor -KM1'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 5. CONTACTO SOLDADO EN CONTACTOR (-KM1) */}
+                <div className={`p-4 rounded-xl border transition-all ${
+                  activeFaults.has('welded_contact_km1') || activeFaults.has('contacto_soldado')
+                    ? 'bg-red-50/70 border-red-500 shadow-md ring-1 ring-red-500'
+                    : 'bg-white border-slate-200 hover:border-slate-300 shadow-2xs'
+                }`}>
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className={`p-2 rounded-lg ${
+                        activeFaults.has('welded_contact_km1') || activeFaults.has('contacto_soldado')
+                          ? 'bg-red-600 text-white animate-pulse'
+                          : 'bg-slate-100 text-slate-700'
+                      }`}>
+                        <Zap className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900">
+                          5. Contacto Soldado en Contactor (-KM1)
+                        </h3>
+                        <span className="text-[10px] font-mono text-red-700 font-bold">
+                          Polos 1-2, 3-4, 5-6 & NA 13-14 • No Responde a Parada
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="mt-2.5 text-xs text-slate-600 leading-relaxed">
+                    Fusión de las pastillas bimetálicas por sobrecorriente o arco. Los contactos permanecen permanentemente cerrados conduciendo energía hacia el motor, ignorando el pulsador de parada.
+                  </p>
+
+                  <div className="mt-3.5 pt-3 border-t border-slate-100 flex items-center gap-2">
+                    <button
+                      onClick={() => onToggleFault('welded_contact_km1')}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-bold border transition-all ${
+                        activeFaults.has('welded_contact_km1') || activeFaults.has('contacto_soldado')
+                          ? 'bg-red-600 text-white border-red-700 shadow-xs'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      {activeFaults.has('welded_contact_km1') || activeFaults.has('contacto_soldado') ? '✓ Contactos Soldados -KM1 (Activo)' : 'Soldar Contactos Contactor -KM1'}
                     </button>
                   </div>
                 </div>
@@ -833,6 +893,8 @@ export const FaultInjectorModal: React.FC<Props> = ({
                   { key: 'L2_N', name: 'Línea L2 - Neutro', category: 'Fase 2 a Neutro' },
                   { key: 'F1_95_96', name: 'Térmico -F1 (95-96)', category: 'Contacto Protección' },
                   { key: 'KM1_A1_A2', name: 'Bobina -KM1 (A1-A2)', category: 'Solenoide Contactor' },
+                  { key: 'KM1_CONTACTS', name: 'Polos -KM1 (1-2, 3-4, 5-6)', category: 'Contactos Principales' },
+                  { key: 'KM1_13_14', name: 'Retención -KM1 (13-14)', category: 'Contacto Auxiliar NA' },
                   { key: 'M1_TERMINALS', name: 'Bornas Motor -M1', category: 'Bornas U1-V1-W1' }
                 ].map((pt) => {
                   const isSelected = voltageProbePoint === pt.key;

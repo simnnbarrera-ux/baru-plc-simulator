@@ -21,7 +21,7 @@ export const VirtualMultimeter: React.FC<Props> = ({
   >('voltage_ll');
 
   const [phasePair, setPhasePair] = useState<'L1_L2' | 'L2_L3' | 'L1_L3'>('L1_L2');
-  const [resistancePoint, setResistancePoint] = useState<'coil_km1' | 'thermal_95_96' | 'breaker_q1'>('coil_km1');
+  const [resistancePoint, setResistancePoint] = useState<'coil_km1' | 'thermal_95_96' | 'breaker_q1' | 'km1_contacts' | 'km1_aux_13_14'>('coil_km1');
 
   if (!isOpen) return null;
 
@@ -29,11 +29,13 @@ export const VirtualMultimeter: React.FC<Props> = ({
   const isKm1Active = simulationState.activeCoils.has('-KM1');
 
   // Evaluar presencia de fallas
-  const hasPhaseLossL2 = activeFaults.has('phase_loss_l2');
-  const hasPhaseLossL3 = activeFaults.has('phase_loss_l3');
+  const hasPhaseLossL1 = activeFaults.has('phase_loss_l1') || activeFaults.has('corte_fase_l1');
+  const hasPhaseLossL2 = activeFaults.has('phase_loss_l2') || activeFaults.has('corte_fase_l2') || activeFaults.has('fase_cortada');
+  const hasPhaseLossL3 = activeFaults.has('phase_loss_l3') || activeFaults.has('corte_fase_l3');
   const hasThermalTrip = activeFaults.has('thermal_overload');
-  const hasOpenCoil = activeFaults.has('open_coil_km1');
+  const hasOpenCoil = activeFaults.has('open_coil_km1') || activeFaults.has('bobina_abierta');
   const hasShortCircuit = activeFaults.has('short_circuit');
+  const hasWeldedContact = activeFaults.has('welded_contact_km1') || activeFaults.has('contacto_soldado');
 
   // Cálculos de Tensión Línea - Línea (400V)
   let voltageLL = 0.0;
@@ -100,6 +102,22 @@ export const VirtualMultimeter: React.FC<Props> = ({
       isResistanceOL = true;
     } else {
       resistanceDisplay = "000.1";
+    }
+  } else if (resistancePoint === 'km1_contacts') {
+    if (hasWeldedContact) {
+      resistanceDisplay = "000.1";
+      isResistanceOL = false;
+    } else {
+      resistanceDisplay = " O.L ";
+      isResistanceOL = true;
+    }
+  } else if (resistancePoint === 'km1_aux_13_14') {
+    if (hasWeldedContact) {
+      resistanceDisplay = "000.1";
+      isResistanceOL = false;
+    } else {
+      resistanceDisplay = " O.L ";
+      isResistanceOL = true;
     }
   }
 
@@ -205,10 +223,10 @@ export const VirtualMultimeter: React.FC<Props> = ({
                 <Volume2 className="w-3 h-3" /> Beep
               </button>
             </div>
-            <div className="flex items-center gap-1 text-[10px] font-mono">
+            <div className="grid grid-cols-3 gap-1 text-[10px] font-mono">
               <button
                 onClick={() => setResistancePoint('coil_km1')}
-                className={`flex-1 py-1 rounded transition-colors ${
+                className={`py-1 rounded transition-colors text-center ${
                   resistancePoint === 'coil_km1'
                     ? 'bg-purple-600 text-white font-bold'
                     : 'bg-slate-800 text-slate-400 hover:text-white'
@@ -218,7 +236,7 @@ export const VirtualMultimeter: React.FC<Props> = ({
               </button>
               <button
                 onClick={() => setResistancePoint('thermal_95_96')}
-                className={`flex-1 py-1 rounded transition-colors ${
+                className={`py-1 rounded transition-colors text-center ${
                   resistancePoint === 'thermal_95_96'
                     ? 'bg-orange-600 text-white font-bold'
                     : 'bg-slate-800 text-slate-400 hover:text-white'
@@ -228,13 +246,33 @@ export const VirtualMultimeter: React.FC<Props> = ({
               </button>
               <button
                 onClick={() => setResistancePoint('breaker_q1')}
-                className={`flex-1 py-1 rounded transition-colors ${
+                className={`py-1 rounded transition-colors text-center ${
                   resistancePoint === 'breaker_q1'
                     ? 'bg-blue-600 text-white font-bold'
                     : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
                 Guardamotor
+              </button>
+              <button
+                onClick={() => setResistancePoint('km1_contacts')}
+                className={`col-span-2 py-1 rounded transition-colors text-center ${
+                  resistancePoint === 'km1_contacts'
+                    ? 'bg-red-600 text-white font-bold'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                Polos KM1 (1-2)
+              </button>
+              <button
+                onClick={() => setResistancePoint('km1_aux_13_14')}
+                className={`py-1 rounded transition-colors text-center ${
+                  resistancePoint === 'km1_aux_13_14'
+                    ? 'bg-rose-600 text-white font-bold'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                NA 13-14
               </button>
             </div>
           </div>
