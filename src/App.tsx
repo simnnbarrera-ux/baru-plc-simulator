@@ -1,39 +1,124 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { CircuitDocument, PlacedComponent, WireSegment, WireType } from './types/circuit';
 import { SimulationState } from './types/simulation';
+import { CloudProject, CloudSyncStatus, ExamAttemptRecord } from './types/cloud';
 import { CircuitSolver } from './core/simulation/solver';
-import { 
-  DIRECT_STARTER_CIRCUIT, 
-  STAR_DELTA_CIRCUIT, 
-  REVERSE_STARTER_CIRCUIT, 
-  CONVEYOR_BELT_CIRCUIT, 
-  WATER_TANK_PUMP_CIRCUIT 
+import {
+  DIRECT_STARTER_CIRCUIT,
+  STAR_DELTA_CIRCUIT,
+  REVERSE_STARTER_CIRCUIT,
+  CONVEYOR_BELT_CIRCUIT,
+  WATER_TANK_PUMP_CIRCUIT,
+  PLC_S71200_STARTER_CIRCUIT,
+  PNEUMATIC_PLC_CIRCUIT,
+  PNEUMATIC_TIA_PROGRAM
 } from './core/examples';
-import { MenuBar } from './components/layout/MenuBar';
-import { ToolBar } from './components/layout/ToolBar';
-import { ComponentRibbon } from './components/layout/ComponentRibbon';
-import { StatusBar } from './components/layout/StatusBar';
+import {
+  DEFAULT_TIA_PROGRAM,
+  TiaProgramDocument,
+  TiaRuntimeState,
+  createInitialRuntime,
+  stepTiaScanCycle
+} from './core/plc/tiaEngine';
+import { useAuth } from './contexts/AuthContext';
+import {
+  deleteCloudProject,
+  duplicateCloudProject,
+  fetchSharedProjectBySlug,
+  listUserExamAttempts,
+  listUserProjects,
+  recordExamAttempt,
+  saveProjectToCloud,
+  toggleProjectSharing
+} from './core/supabase/repository';
+import { TinkerHeader, WorkspaceView } from './components/layout/TinkerHeader';
+import { TinkerFloatingBar } from './components/canvas/TinkerFloatingBar';
+import { TinkerInspector } from './components/canvas/TinkerInspector';
+import { TinkerComponentDrawer } from './components/layout/TinkerComponentDrawer';
+import { TiaWorkspaceView } from './components/plc/TiaWorkspaceView';
 import { SchematicCanvas, SchematicCanvasRef } from './components/canvas/SchematicCanvas';
 import { ComponentEditModal } from './components/dialogs/ComponentEditModal';
-import { ImportExportModal } from './components/dialogs/ImportExportModal';
+import { UnifiedExportModal, ExportModalTab } from './components/dialogs/UnifiedExportModal';
 import { AboutModal } from './components/dialogs/AboutModal';
 import { DigitalTwinPlant } from './components/plant/DigitalTwinPlant';
 import { TimingDiagram } from './components/tools/TimingDiagram';
 import { VirtualMultimeter } from './components/tools/VirtualMultimeter';
 import { LabReportModal } from './components/dialogs/LabReportModal';
-import { LadderEditorModal } from './components/plc/LadderEditorModal';
 import { FaultInjectorModal } from './components/tools/FaultInjectorModal';
+import { AuthModal, AuthModalMode } from './components/auth/AuthModal';
+import { ProjectsModal, ProjectsModalTab } from './components/cloud/ProjectsModal';
+import { SharedProjectBanner } from './components/cloud/SharedProjectBanner';
+import { OnboardingWizard } from './components/onboarding/OnboardingWizard';
 import { FaultId, FAULT_CATALOG, ExamSession } from './types/faults';
 import { COMPONENT_CATALOG } from './core/components/catalog';
 import { soundEffects } from './core/simulation/soundEffects';
-import { CadParser } from './core/format/cadParser';
 import { AlertOctagon, CheckCircle2, AlertCircle, Info } from 'lucide-react';
 
-export const App: React.FC = () => {
-  // Estado del documento esquemático (iniciado con el arranque directo trifásico interactivo)
-  const [doc, setDoc] = useState<CircuitDocument>(DIRECT_STARTER_CIRCUIT);
+const GUEST_ONBOARDING_SEEN_KEY = 'baru_guest_onboarding_seen_v1';
+const SESSION_ONBOARDING_DONE_KEY = 'baru_onboarding_done_session_v1';
 
-  // Historial de Deshacer y Rehacer (Pila limitada a los últimos 40 estados)
+const createEmptySimulationState = (): SimulationState => ({
+  mode: 'stopped',
+  simulationTime: 0,
+  stepCount: 0,
+  fps: 60,
+  activeCoils: new Set<string>(),
+  energizedWires: new Set<string>(),
+  energizedPins: new Set<string>(),
+  timerStates: new Map(),
+  motorStates: new Map(),
+  pilotLights: new Map(),
+  pneumaticStates: new Map()
+});
+
+export const App: React.FC = () => {
+  const {
+    user,
+    profile,
+    loading: authLoading,
+    schemaMissing: authSchemaMissing,
+    signOut,
+    completeOnboarding,
+    skipOnboarding,
+    resetOnboarding,
+    setOnboardingStep
+  } = useAuth();
+
+  // Documento esquemático + Programa TIA S7-1200 unificados
+  const [doc, setDoc] = useState<CircuitDocument>(PLC_S71200_STARTER_CIRCUIT);
+  const [tiaProgram, setTiaProgram] = useState<TiaProgramDocument>(DEFAULT_TIA_PROGRAM);
+  const [tiaRuntime, setTiaRuntime] = useState<TiaRuntimeState>(() =>
+    createInitialRuntime(DEFAULT_TIA_PROGRAM)
+  );
+
+  // Estado Cloud Supabase (Proyectos, Exámenes, Enlaces Compartidos, Autoguardado)
+  const [activeCloudProjectId, setActiveCloudProjectId] = useState<string | null>(null);
+  const [cloudProjects, setCloudProjects] = useState<CloudProject[]>([]);
+  const [examAttempts, setExamAttempts] = useState<ExamAttemptRecord[]>([]);
+  const [isLoadingCloud, setIsLoadingCloud] = useState<boolean>(false);
+  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>('idle');
+  const [repoSchemaMissing, setRepoSchemaMissing] = useState<boolean>(false);
+  const [sharedBanner, setSharedBanner] = useState<{ title: string; slug: string } | null>(null);
+  const [isCloningShared, setIsCloningShared] = useState<boolean>(false);
+
+  // Modales Cloud / Auth / Onboarding
+  const [authModalState, setAuthModalState] = useState<{
+    open: boolean;
+    mode: AuthModalMode;
+    reason?: string | null;
+  }>({ open: false, mode: 'login', reason: null });
+  const [projectsModalTab, setProjectsModalTab] = useState<ProjectsModalTab | null>(null);
+  const [isWizardOpen, setIsWizardOpen] = useState<boolean>(false);
+  const [wizardInitialStep, setWizardInitialStep] = useState<number>(1);
+  const wizardAutoTriggeredUserRef = useRef<string | null>(null);
+  const guestWizardTriggeredRef = useRef<boolean>(false);
+  const isHydratingCloudRef = useRef<boolean>(false);
+
+  // Vista estilo Tinkercad
+  const [activeView, setActiveView] = useState<WorkspaceView>('cad');
+  const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(true);
+
+  // Historial Deshacer / Rehacer
   const MAX_HISTORY = 40;
   const [pastDocs, setPastDocs] = useState<CircuitDocument[]>([]);
   const [futureDocs, setFutureDocs] = useState<CircuitDocument[]>([]);
@@ -43,38 +128,39 @@ export const App: React.FC = () => {
     docRef.current = doc;
   }, [doc]);
 
-  // Estado del motor de simulación
-  const [simulationState, setSimulationState] = useState<SimulationState>({
-    mode: 'stopped',
-    simulationTime: 0,
-    stepCount: 0,
-    fps: 60,
-    activeCoils: new Set<string>(),
-    energizedWires: new Set<string>(),
-    energizedPins: new Set<string>(),
-    timerStates: new Map(),
-    motorStates: new Map(),
-    pilotLights: new Map()
-  });
+  const tiaProgramRef = useRef(tiaProgram);
+  useEffect(() => {
+    tiaProgramRef.current = tiaProgram;
+  }, [tiaProgram]);
+
+  const tiaRuntimeRef = useRef(tiaRuntime);
+  useEffect(() => {
+    tiaRuntimeRef.current = tiaRuntime;
+  }, [tiaRuntime]);
+
+  // Estado del motor de simulación eléctrica + neumática
+  const [simulationState, setSimulationState] = useState<SimulationState>(createEmptySimulationState);
+  const simStateRef = useRef<SimulationState>(simulationState);
+  useEffect(() => {
+    simStateRef.current = simulationState;
+  }, [simulationState]);
 
   // Herramientas y selección
   const [activeTool, setActiveTool] = useState<string | null>('select');
-  const [selectedWireType, setSelectedWireType] = useState<WireType | null>(null);
+  const [selectedWireType, setSelectedWireType] = useState<WireType | null>('phase1');
   const [selectedComponent, setSelectedComponent] = useState<PlacedComponent | null>(null);
   const [selectedWire, setSelectedWire] = useState<WireSegment | null>(null);
   const [editingComponent, setEditingComponent] = useState<PlacedComponent | null>(null);
 
-  // Modales y Herramientas Pro
-  const [isImportExportOpen, setIsImportExportOpen] = useState<boolean>(false);
+  // Modales y Herramientas Avanzadas
+  const [exportModalTab, setExportModalTab] = useState<ExportModalTab | null>(null);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
-  const [isTwinOpen, setIsTwinOpen] = useState<boolean>(false);
   const [isTimingOpen, setIsTimingOpen] = useState<boolean>(false);
   const [isMeterOpen, setIsMeterOpen] = useState<boolean>(false);
   const [isReportOpen, setIsReportOpen] = useState<boolean>(false);
-  const [isLadderOpen, setIsLadderOpen] = useState<boolean>(false);
   const [isFaultsOpen, setIsFaultsOpen] = useState<boolean>(false);
 
-  // Sistema de inyección didáctica de fallas y examen oficial
+  // Sistema de inyección de fallas y examen
   const [activeFaults, setActiveFaults] = useState<Set<string>>(new Set());
   const [shortCircuitAlert, setShortCircuitAlert] = useState<string | null>(null);
   const [examSession, setExamSession] = useState<ExamSession>({
@@ -89,49 +175,384 @@ export const App: React.FC = () => {
     studentNotes: ''
   });
 
-  // Coordenadas actuales del ratón
-  const [coords, setCoords] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  // Coordenadas del cursor
+  const [coords, setCoords] = useState<{ x: number; y: number }>({ x: 15, y: 12 });
 
-  // Referencias a lienzo, solver y selector de archivos
+  // Referencias para co-simulación
   const canvasRef = useRef<SchematicCanvasRef | null>(null);
   const solverRef = useRef<CircuitSolver | null>(null);
+  const plcInputsRef = useRef<Record<string, boolean>>({});
   const plcOutputsRef = useRef<Record<string, boolean>>({});
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Sistema de notificaciones Toast no intrusivas
+  // Toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
-
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ message, type });
-    setTimeout(() => setToast(null), 3500);
+    toastTimerRef.current = setTimeout(() => setToast(null), 3800);
   }, []);
 
-  // Actualización de documento con registro atómico en el historial de Deshacer/Rehacer
-  const updateDocWithHistory = useCallback((
-    newDocOrUpdater: CircuitDocument | ((prev: CircuitDocument) => CircuitDocument),
-    saveHistory = true,
-    previousDocSnapshot?: CircuitDocument
-  ) => {
-    setDoc(prev => {
-      const nextDoc = typeof newDocOrUpdater === 'function' ? newDocOrUpdater(prev) : newDocOrUpdater;
-      if (saveHistory) {
-        const snapshot = previousDocSnapshot 
-          ? JSON.parse(JSON.stringify(previousDocSnapshot)) 
-          : JSON.parse(JSON.stringify(prev));
-        setPastDocs(p => [...p, snapshot].slice(-MAX_HISTORY));
-        setFutureDocs([]);
+  // --------------------------------------------------------------------------
+  // Carga de Proyectos e Historial de Exámenes desde Supabase
+  // --------------------------------------------------------------------------
+  const refreshCloudData = useCallback(async (userId: string) => {
+    setIsLoadingCloud(true);
+    const [projRes, examRes] = await Promise.all([
+      listUserProjects(userId),
+      listUserExamAttempts(userId)
+    ]);
+
+    let missingSchema = false;
+    if (projRes.success) {
+      setCloudProjects(projRes.data);
+    } else if (projRes.schemaMissing) {
+      missingSchema = true;
+    }
+
+    if (examRes.success) {
+      setExamAttempts(examRes.data);
+    } else if (examRes.schemaMissing) {
+      missingSchema = true;
+    }
+
+    setRepoSchemaMissing(missingSchema);
+    setIsLoadingCloud(false);
+  }, []);
+
+  useEffect(() => {
+    if (user?.id) {
+      refreshCloudData(user.id);
+    } else {
+      setCloudProjects([]);
+      setExamAttempts([]);
+      setActiveCloudProjectId(null);
+      setSyncStatus('idle');
+      wizardAutoTriggeredUserRef.current = null;
+    }
+  }, [user?.id, refreshCloudData]);
+
+  // --------------------------------------------------------------------------
+  // Disparo Automático del Wizard de 5 Pasos:
+  // - Primera vez que se abre el programa sin sesión (modo invitado, 1 sola vez)
+  // - Primera vez que entra una cuenta nueva (persistido DB-First en profiles)
+  // --------------------------------------------------------------------------
+  useEffect(() => {
+    if (authLoading) return;
+
+    const hasShareParam = Boolean(new URLSearchParams(window.location.search).get('share')?.trim());
+
+    // Caso 1: Usuario autenticado -> Supabase profiles es la fuente de la verdad
+    if (user && profile) {
+      if (wizardAutoTriggeredUserRef.current === user.id) return;
+      wizardAutoTriggeredUserRef.current = user.id;
+
+      if (profile.onboarding_completed || profile.onboarding_skipped) {
+        try {
+          window.localStorage.setItem(
+            GUEST_ONBOARDING_SEEN_KEY,
+            profile.onboarding_completed ? 'completed' : 'skipped'
+          );
+        } catch {
+          // Ignore storage quota errors
+        }
+        return;
       }
-      return nextDoc;
-    });
+
+      // Si el usuario ya completó u omitió el tutorial como invitado en esta misma sesión,
+      // sincronizamos su nuevo perfil en Supabase sin mostrarle el wizard por segunda vez.
+      let sessionDone: string | null = null;
+      try {
+        sessionDone = window.sessionStorage.getItem(SESSION_ONBOARDING_DONE_KEY);
+      } catch {
+        sessionDone = null;
+      }
+
+      if (sessionDone === 'completed') {
+        completeOnboarding();
+        return;
+      }
+      if (sessionDone === 'skipped') {
+        skipOnboarding();
+        return;
+      }
+
+      if (!hasShareParam) {
+        setWizardInitialStep(Math.min(5, Math.max(1, profile.onboarding_step || 1)));
+        setIsWizardOpen(true);
+      }
+      return;
+    }
+
+    // Caso 2: Invitado abriendo el programa por primera vez en este navegador
+    if (!user && !guestWizardTriggeredRef.current && !hasShareParam) {
+      guestWizardTriggeredRef.current = true;
+      let alreadySeen: string | null = null;
+      try {
+        alreadySeen = window.localStorage.getItem(GUEST_ONBOARDING_SEEN_KEY);
+      } catch {
+        alreadySeen = null;
+      }
+      if (!alreadySeen) {
+        setWizardInitialStep(1);
+        setIsWizardOpen(true);
+      }
+    }
+  }, [authLoading, user, profile, completeOnboarding, skipOnboarding]);
+
+  // --------------------------------------------------------------------------
+  // Carga de Proyecto Compartido Público vía URL (?share=<slug>)
+  // --------------------------------------------------------------------------
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const slug = params.get('share')?.trim();
+    if (!slug) return;
+
+    let cancelled = false;
+    (async () => {
+      const res = await fetchSharedProjectBySlug(slug);
+      if (cancelled) return;
+      if (res.success && res.data) {
+        isHydratingCloudRef.current = true;
+        setDoc(res.data.circuit_doc);
+        setTiaProgram(res.data.tia_program);
+        setTiaRuntime(createInitialRuntime(res.data.tia_program));
+        setActiveCloudProjectId(null);
+        setSharedBanner({ title: res.data.title, slug });
+        setActiveView('cad');
+        showToast(`Proyecto compartido cargado: "${res.data.title}"`, 'info');
+        setTimeout(() => {
+          canvasRef.current?.fitToScreen();
+          isHydratingCloudRef.current = false;
+        }, 250);
+      } else if (!res.success) {
+        if (res.schemaMissing) setRepoSchemaMissing(true);
+        showToast(res.error || 'No se pudo cargar el enlace compartido', 'error');
+      } else {
+        showToast('El enlace compartido no existe o fue desactivado', 'error');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showToast]);
+
+  // --------------------------------------------------------------------------
+  // Guardado Manual y Autoguardado DB-First en Supabase
+  // --------------------------------------------------------------------------
+  const performCloudSave = useCallback(
+    async (opts?: { forceNew?: boolean; silent?: boolean }) => {
+      if (!user) {
+        if (!opts?.silent) {
+          setAuthModalState({
+            open: true,
+            mode: 'signup',
+            reason: 'Crea una cuenta gratuita o inicia sesión para guardar tus diseños CAD + TIA en Supabase y compartir enlaces.'
+          });
+        }
+        return null;
+      }
+
+      setSyncStatus('saving');
+      const targetId = opts?.forceNew ? null : activeCloudProjectId;
+      const title = docRef.current.titleBlock?.title?.trim() || 'Proyecto Baru Studio';
+      const res = await saveProjectToCloud({
+        id: targetId,
+        userId: user.id,
+        title,
+        description: docRef.current.titleBlock?.project || 'CADe_SIMU + TIA Portal S7-1200',
+        circuitDoc: docRef.current,
+        tiaProgram: tiaProgramRef.current
+      });
+
+      if (res.success) {
+        setActiveCloudProjectId(res.data.id);
+        setSharedBanner(null);
+        setSyncStatus('saved');
+        setRepoSchemaMissing(false);
+        setCloudProjects(prev => {
+          const exists = prev.some(p => p.id === res.data.id);
+          return exists
+            ? prev.map(p => (p.id === res.data.id ? res.data : p))
+            : [res.data, ...prev];
+        });
+        if (!opts?.silent) {
+          showToast(
+            opts?.forceNew
+              ? `Copia guardada en la nube: "${res.data.title}"`
+              : `Proyecto guardado en Supabase: "${res.data.title}"`,
+            'success'
+          );
+        }
+        return res.data;
+      } else {
+        if (res.schemaMissing) setRepoSchemaMissing(true);
+        setSyncStatus(navigator.onLine ? 'error' : 'offline');
+        if (!opts?.silent) {
+          showToast(res.error || 'No se pudo guardar en Supabase', 'error');
+        }
+        return null;
+      }
+    },
+    [user, activeCloudProjectId, showToast]
+  );
+
+  // Autoguardado con debounce (4s) cuando existe proyecto en nube activo
+  useEffect(() => {
+    if (!user || !activeCloudProjectId || sharedBanner || isHydratingCloudRef.current) return;
+    setSyncStatus('idle');
+    const timer = setTimeout(() => {
+      performCloudSave({ silent: true });
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [doc, tiaProgram, user, activeCloudProjectId, sharedBanner, performCloudSave]);
+
+  const handleOpenCloudProject = useCallback(
+    (project: CloudProject) => {
+      isHydratingCloudRef.current = true;
+      setSimulationState(createEmptySimulationState());
+      setDoc(project.circuit_doc);
+      setTiaProgram(project.tia_program);
+      setTiaRuntime(createInitialRuntime(project.tia_program));
+      setActiveCloudProjectId(project.id);
+      setSharedBanner(null);
+      setSelectedComponent(null);
+      setSelectedWire(null);
+      setSyncStatus('saved');
+      setProjectsModalTab(null);
+      setActiveView('cad');
+      showToast(`Proyecto cargado: "${project.title}"`, 'success');
+      setTimeout(() => {
+        canvasRef.current?.fitToScreen();
+        isHydratingCloudRef.current = false;
+      }, 200);
+    },
+    [showToast]
+  );
+
+  const handleDuplicateCloudProject = useCallback(
+    async (project: CloudProject) => {
+      if (!user) return;
+      const res = await duplicateCloudProject(project, user.id);
+      if (res.success) {
+        setCloudProjects(prev => [res.data, ...prev]);
+        showToast(`Duplicado como "${res.data.title}"`, 'success');
+      } else {
+        showToast(res.error, 'error');
+      }
+    },
+    [user, showToast]
+  );
+
+  const handleDeleteCloudProject = useCallback(
+    async (project: CloudProject) => {
+      if (!user) return;
+      const res = await deleteCloudProject(project.id, user.id);
+      if (res.success) {
+        setCloudProjects(prev => prev.filter(p => p.id !== project.id));
+        if (activeCloudProjectId === project.id) {
+          setActiveCloudProjectId(null);
+          setSyncStatus('idle');
+        }
+        showToast(`Proyecto "${project.title}" eliminado`, 'info');
+      } else {
+        showToast(res.error, 'error');
+      }
+    },
+    [user, activeCloudProjectId, showToast]
+  );
+
+  const handleToggleShareProject = useCallback(
+    async (project: CloudProject, enable: boolean): Promise<CloudProject | null> => {
+      if (!user) return null;
+      const res = await toggleProjectSharing(project.id, user.id, enable);
+      if (res.success) {
+        setCloudProjects(prev => prev.map(p => (p.id === res.data.id ? res.data : p)));
+        showToast(
+          enable ? 'Enlace público activado' : 'Proyecto cambiado a privado',
+          'success'
+        );
+        return res.data;
+      } else {
+        showToast(res.error, 'error');
+        return null;
+      }
+    },
+    [user, showToast]
+  );
+
+  const handleCopyShareLink = useCallback(
+    (slug: string) => {
+      const shareUrl = `${window.location.origin}${window.location.pathname}?share=${slug}`;
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(shareUrl).then(
+          () => showToast('Enlace público copiado al portapapeles', 'success'),
+          () => showToast(shareUrl, 'info')
+        );
+      } else {
+        showToast(shareUrl, 'info');
+      }
+    },
+    [showToast]
+  );
+
+  const handleCloneSharedProject = useCallback(async () => {
+    if (!user) {
+      setAuthModalState({
+        open: true,
+        mode: 'signup',
+        reason: 'Inicia sesión o crea tu cuenta para clonar este proyecto compartido en tu espacio de trabajo.'
+      });
+      return;
+    }
+    setIsCloningShared(true);
+    const saved = await performCloudSave({ forceNew: true });
+    setIsCloningShared(false);
+    if (saved) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('share');
+      window.history.replaceState({}, '', url.toString());
+      setSharedBanner(null);
+    }
+  }, [user, performCloudSave]);
+
+  const handleDismissSharedBanner = useCallback(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('share');
+    window.history.replaceState({}, '', url.toString());
+    setSharedBanner(null);
   }, []);
 
-  // Función Deshacer (Ctrl+Z)
+  // --------------------------------------------------------------------------
+  // Actualización atómica con historial Undo/Redo
+  // --------------------------------------------------------------------------
+  const updateDocWithHistory = useCallback(
+    (
+      newDocOrUpdater: CircuitDocument | ((prev: CircuitDocument) => CircuitDocument),
+      saveHistory = true,
+      previousDocSnapshot?: CircuitDocument
+    ) => {
+      setDoc(prev => {
+        const nextDoc = typeof newDocOrUpdater === 'function' ? newDocOrUpdater(prev) : newDocOrUpdater;
+        if (saveHistory) {
+          const snapshot = previousDocSnapshot
+            ? JSON.parse(JSON.stringify(previousDocSnapshot))
+            : JSON.parse(JSON.stringify(prev));
+          setPastDocs(p => [...p, snapshot].slice(-MAX_HISTORY));
+          setFutureDocs([]);
+        }
+        return nextDoc;
+      });
+    },
+    []
+  );
+
   const handleUndo = useCallback(() => {
     setPastDocs(prevPast => {
       if (prevPast.length === 0) return prevPast;
       const previousDoc = prevPast[prevPast.length - 1];
       const newPast = prevPast.slice(0, prevPast.length - 1);
-
       setFutureDocs(prevFuture => [JSON.parse(JSON.stringify(docRef.current)), ...prevFuture].slice(0, MAX_HISTORY));
       setDoc(previousDoc);
       setSelectedComponent(null);
@@ -141,13 +562,11 @@ export const App: React.FC = () => {
     });
   }, [showToast]);
 
-  // Función Rehacer (Ctrl+Y / Ctrl+Shift+Z)
   const handleRedo = useCallback(() => {
     setFutureDocs(prevFuture => {
       if (prevFuture.length === 0) return prevFuture;
       const nextDoc = prevFuture[0];
       const newFuture = prevFuture.slice(1);
-
       setPastDocs(prevPast => [...prevPast, JSON.parse(JSON.stringify(docRef.current))].slice(-MAX_HISTORY));
       setDoc(nextDoc);
       setSelectedComponent(null);
@@ -157,162 +576,125 @@ export const App: React.FC = () => {
     });
   }, [showToast]);
 
-  // Borrado de elemento o cable seleccionado (Supr / Delete)
   const handleDeleteSelection = useCallback(() => {
+    const curDoc = docRef.current;
     if (selectedWire) {
-      const remainingWires = doc.wires.filter(w => w.id !== selectedWire.id);
-      const updatedJunctions = doc.junctions.filter(j => {
+      const remainingWires = curDoc.wires.filter(w => w.id !== selectedWire.id);
+      const updatedJunctions = curDoc.junctions.filter(j => {
         let count = 0;
         for (const w of remainingWires) {
           if ((w.fromX === j.x && w.fromY === j.y) || (w.toX === j.x && w.toY === j.y)) count++;
         }
         return count >= 2;
       });
-      updateDocWithHistory({
-        ...doc,
-        wires: remainingWires,
-        junctions: updatedJunctions
-      }, true);
+      updateDocWithHistory({ ...curDoc, wires: remainingWires, junctions: updatedJunctions }, true);
       setSelectedWire(null);
-      showToast('Cable conductor eliminado', 'info');
+      showToast('Cable eliminado', 'info');
       return;
     }
 
     if (selectedComponent) {
-      updateDocWithHistory({
-        ...doc,
-        components: doc.components.filter(c => c.id !== selectedComponent.id)
-      }, true);
+      updateDocWithHistory(
+        { ...curDoc, components: curDoc.components.filter(c => c.id !== selectedComponent.id) },
+        true
+      );
       const tag = selectedComponent.tag;
       setSelectedComponent(null);
       showToast(`Componente ${tag} eliminado`, 'info');
-      return;
     }
-  }, [selectedWire, selectedComponent, doc, updateDocWithHistory, showToast]);
+  }, [selectedWire, selectedComponent, updateDocWithHistory, showToast]);
 
-  // Escucha de atajos de teclado globales para Deshacer (Ctrl+Z) y Rehacer (Ctrl+Y)
+  const handleRotateComponent = useCallback(
+    (compId?: string) => {
+      const targetId = compId || selectedComponent?.id;
+      if (!targetId) return;
+      updateDocWithHistory(
+        prev => ({
+          ...prev,
+          components: prev.components.map(c =>
+            c.id === targetId ? { ...c, rotation: ((c.rotation + 90) % 360) as 0 | 90 | 180 | 270 } : c
+          )
+        }),
+        true
+      );
+      setSelectedComponent(prev =>
+        prev && prev.id === targetId
+          ? { ...prev, rotation: ((prev.rotation + 90) % 360) as 0 | 90 | 180 | 270 }
+          : prev
+      );
+    },
+    [selectedComponent, updateDocWithHistory]
+  );
+
+  // Atajos globales de teclado (Ctrl+Z, Ctrl+Y, Ctrl+S, R, W, Delete, Escape)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isWizardOpen) return;
       const tag = (e.target as HTMLElement)?.tagName?.toUpperCase();
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) {
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target as HTMLElement)?.isContentEditable) {
         return;
       }
 
       const modifier = e.ctrlKey || e.metaKey;
-      if (!modifier) return;
-
-      // Ctrl+Z (sin Shift) -> Deshacer
-      if ((e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
-        e.preventDefault();
-        handleUndo();
+      if (modifier) {
+        if ((e.key === 's' || e.key === 'S')) {
+          e.preventDefault();
+          performCloudSave();
+          return;
+        }
+        if ((e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+          return;
+        }
+        if (e.key === 'y' || e.key === 'Y' || (e.shiftKey && (e.key === 'z' || e.key === 'Z'))) {
+          e.preventDefault();
+          handleRedo();
+          return;
+        }
         return;
       }
 
-      // Ctrl+Y o Ctrl+Shift+Z -> Rehacer
-      if ((e.key === 'y' || e.key === 'Y') || (e.shiftKey && (e.key === 'z' || e.key === 'Z'))) {
+      if (activeView !== 'cad') return;
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (simStateRef.current.mode === 'stopped' && (selectedComponent || selectedWire)) {
+          e.preventDefault();
+          handleDeleteSelection();
+        }
+      } else if ((e.key === 'r' || e.key === 'R') && selectedComponent && simStateRef.current.mode === 'stopped') {
         e.preventDefault();
-        handleRedo();
-        return;
+        handleRotateComponent(selectedComponent.id);
+      } else if ((e.key === 'w' || e.key === 'W') && simStateRef.current.mode === 'stopped') {
+        e.preventDefault();
+        setActiveTool('wire');
+      } else if (e.key === 'Escape') {
+        setActiveTool('select');
+        setSelectedComponent(null);
+        setSelectedWire(null);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo]);
+  }, [
+    isWizardOpen,
+    activeView,
+    selectedComponent,
+    selectedWire,
+    handleUndo,
+    handleRedo,
+    handleDeleteSelection,
+    handleRotateComponent,
+    performCloudSave
+  ]);
 
-  const handleSetTool = useCallback((tool: string | null) => {
-    setActiveTool(tool);
-    if (tool === 'wire' && !selectedWireType) {
-      setSelectedWireType('phase1');
-    }
-  }, [selectedWireType]);
-
-  // Apertura directa con selector nativo de archivos del sistema operativo
-  const handleDirectOpen = useCallback(() => {
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-      fileInputRef.current.click();
-    }
-  }, []);
-
-  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result as string;
-        if (file.name.endsWith('.json')) {
-          const parsed = JSON.parse(text);
-          setSimulationState(prev => ({ ...prev, mode: 'stopped' }));
-          updateDocWithHistory(parsed, true);
-          setSelectedComponent(null);
-          setSelectedWire(null);
-          showToast(`Esquema cargado: ${file.name} (${parsed.components?.length || 0} componentes)`, 'success');
-          setTimeout(() => canvasRef.current?.fitToScreen(), 150);
-        } else {
-          const parsed = CadParser.parse(text);
-          setSimulationState(prev => ({ ...prev, mode: 'stopped' }));
-          updateDocWithHistory(parsed, true);
-          setSelectedComponent(null);
-          setSelectedWire(null);
-          showToast(`Esquema CADe_SIMU cargado: ${file.name} (${parsed.components?.length || 0} componentes)`, 'success');
-          setTimeout(() => canvasRef.current?.fitToScreen(), 150);
-        }
-      } catch (err: any) {
-        showToast(`Error al abrir archivo: ${err.message || 'Formato no reconocido'}`, 'error');
-      }
-    };
-    reader.readAsText(file);
-  }, [showToast, updateDocWithHistory]);
-
-  // Guardado directo sin modal confuso (descarga directa del archivo .cad)
-  const handleDirectSave = useCallback(() => {
-    try {
-      const cadText = CadParser.export(doc);
-      const blob = new Blob([cadText], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const safeTitle = (doc.titleBlock?.title || 'esquema').replace(/[^a-zA-Z0-9_\-]/g, '_');
-      const filename = `${safeTitle}.cad`;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast(`Esquema guardado exitosamente como "${filename}"`, 'success');
-    } catch (err: any) {
-      showToast(`Error al guardar: ${err.message}`, 'error');
-    }
-  }, [doc, showToast]);
-
-  const handleExportCad = useCallback(() => {
-    handleDirectSave();
-  }, [handleDirectSave]);
-
-  const handleExportJson = useCallback(() => {
-    try {
-      const jsonText = JSON.stringify(doc, null, 2);
-      const blob = new Blob([jsonText], { type: 'application/json;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const safeTitle = (doc.titleBlock?.title || 'esquema').replace(/[^a-zA-Z0-9_\-]/g, '_');
-      const filename = `${safeTitle}.json`;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast(`Esquema exportado como JSON ("${filename}")`, 'success');
-    } catch (err: any) {
-      showToast(`Error al exportar JSON: ${err.message}`, 'error');
-    }
-  }, [doc, showToast]);
-
+  // Actualizar instancia del Solver cuando cambia el circuito o fallas
   useEffect(() => {
     solverRef.current = new CircuitSolver(doc.components, doc.wires, doc.junctions, activeFaults);
   }, [doc, activeFaults]);
 
-  // Manejo pedagógico de inyección de averías
+  // Manejo de fallas y examen con persistencia DB-First en Supabase
   const handleToggleFault = useCallback((faultId: FaultId) => {
     setActiveFaults(prev => {
       const next = new Set(prev);
@@ -320,19 +702,15 @@ export const App: React.FC = () => {
         next.delete(faultId);
       } else {
         next.add(faultId);
-        // Si se inyecta cortocircuito franco, disparo magnético instantáneo en -Q1
         if (faultId === 'short_circuit') {
           setDoc(d => ({
             ...d,
-            components: d.components.map(c => {
-              if (c.type === 'breaker_3p' || c.tag === '-Q1') {
-                return { ...c, state: { ...c.state, isOpen: true } };
-              }
-              return c;
-            })
+            components: d.components.map(c =>
+              c.type === 'breaker_3p' || c.tag === '-Q1' ? { ...c, state: { ...c.state, isOpen: true } } : c
+            )
           }));
           soundEffects.playShortCircuitBang();
-          setShortCircuitAlert("¡DISPARO MAGNÉTICO INSTANTÁNEO EN -Q1! Cortocircuito franco presente.");
+          setShortCircuitAlert('¡DISPARO MAGNÉTICO INSTANTÁNEO EN -Q1! Cortocircuito franco presente.');
           setTimeout(() => setShortCircuitAlert(null), 4500);
         }
       }
@@ -350,12 +728,9 @@ export const App: React.FC = () => {
     if (hiddenFaultId === 'short_circuit') {
       setDoc(d => ({
         ...d,
-        components: d.components.map(c => {
-          if (c.type === 'breaker_3p' || c.tag === '-Q1') {
-            return { ...c, state: { ...c.state, isOpen: true } };
-          }
-          return c;
-        })
+        components: d.components.map(c =>
+          c.type === 'breaker_3p' || c.tag === '-Q1' ? { ...c, state: { ...c.state, isOpen: true } } : c
+        )
       }));
       soundEffects.playShortCircuitBang();
     }
@@ -372,22 +747,21 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  const handleSubmitExamAnswer = useCallback((answer: FaultId, notes: string) => {
-    setExamSession(prev => {
-      const isCorrect = answer === prev.hiddenFaultId;
-      const attempts = prev.attempts + 1;
+  const handleSubmitExamAnswer = useCallback(
+    (answer: FaultId, notes: string) => {
+      const hiddenId = examSession.hiddenFaultId;
+      const isCorrect = answer === hiddenId;
+      const attempts = examSession.attempts + 1;
       const score = isCorrect ? Math.max(3.0, 5.0 - (attempts - 1) * 0.5) : 2.0;
-      
-      let feedback = '';
-      if (isCorrect) {
-        soundEffects.playSuccessChime();
-        feedback = `¡Excelente diagnóstico técnico! Has determinado con precisión que la avería es: ${FAULT_CATALOG.find(f => f.id === answer)?.name}. El análisis y comprobación con instrumentos cumplen las directrices técnicas y la normativa IEC 60947.`;
-      } else {
-        soundEffects.playErrorBuzzer();
-        feedback = `Diagnóstico incorrecto. Los síntomas eléctricos en bornas no se corresponden con ${FAULT_CATALOG.find(f => f.id === answer)?.shortName}. Utiliza el multímetro y el comprobador de tensión para verificar la presencia de fases o continuidad de contactos.`;
-      }
 
-      return {
+      if (isCorrect) soundEffects.playSuccessChime();
+      else soundEffects.playErrorBuzzer();
+
+      const feedback = isCorrect
+        ? `¡Excelente diagnóstico! Has identificado: ${FAULT_CATALOG.find(f => f.id === answer)?.name}.`
+        : `Diagnóstico incorrecto para ${FAULT_CATALOG.find(f => f.id === answer)?.shortName}. Verifica tensiones y continuidad con el multímetro.`;
+
+      setExamSession(prev => ({
         ...prev,
         attempts,
         submittedAnswer: answer,
@@ -395,9 +769,30 @@ export const App: React.FC = () => {
         score,
         feedback,
         studentNotes: notes
-      };
-    });
-  }, []);
+      }));
+
+      // Registrar intento real en Supabase si hay sesión activa
+      if (user?.id && hiddenId) {
+        recordExamAttempt({
+          userId: user.id,
+          projectId: activeCloudProjectId,
+          hiddenFaultId: hiddenId,
+          submittedAnswer: answer,
+          isPassed: isCorrect,
+          score,
+          attempts,
+          studentNotes: notes
+        }).then(res => {
+          if (res.success) {
+            setExamAttempts(prev => [res.data, ...prev]);
+          } else if (res.schemaMissing) {
+            setRepoSchemaMissing(true);
+          }
+        });
+      }
+    },
+    [examSession.hiddenFaultId, examSession.attempts, user?.id, activeCloudProjectId]
+  );
 
   const handleResetExam = useCallback(() => {
     setActiveFaults(new Set());
@@ -415,34 +810,33 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  // Manejo de salidas del PLC y sincronización bidireccional
-  const handlePlcOutputsChange = useCallback((outputs: Record<string, boolean>) => {
-    plcOutputsRef.current = outputs;
-    setSimulationState(prev => {
-      const activeCoils = new Set(prev.activeCoils);
-      const pilotLights = new Map(prev.pilotLights);
-      const motorStates = new Map(prev.motorStates);
+  // Paso unificado de co-simulación (Scan TIA Portal + Red Eléctrica/Neumática)
+  const executeCoSimulationTick = useCallback((deltaMs: number) => {
+    const nextTia = stepTiaScanCycle(
+      tiaProgramRef.current,
+      plcInputsRef.current,
+      tiaRuntimeRef.current,
+      deltaMs
+    );
+    tiaRuntimeRef.current = nextTia;
+    plcOutputsRef.current = nextTia.outputs;
+    setTiaRuntime(nextTia);
 
-      if (outputs['%Q0.0']) {
-        activeCoils.add('-KM1');
-        const m = motorStates.get('mot_1') || { rpm: 0, targetRpm: 1450, direction: 1 as const, angle: 0, hasError: false };
-        motorStates.set('mot_1', { ...m, targetRpm: 1450, direction: 1 });
-      }
-
-      if (outputs['%Q0.1']) {
-        pilotLights.set('pilot_run', { color: 'green', isLit: true });
-      }
-
-      return {
-        ...prev,
-        activeCoils,
-        pilotLights,
-        motorStates
-      };
-    });
+    if (solverRef.current) {
+      const nextSim = solverRef.current.step(
+        simStateRef.current,
+        deltaMs,
+        plcOutputsRef.current,
+        sampledIn => {
+          plcInputsRef.current = sampledIn;
+        }
+      );
+      simStateRef.current = nextSim;
+      setSimulationState(nextSim);
+    }
   }, []);
 
-  // Bucle de Simulación a 60 FPS cuando está en modo 'running'
+  // Bucle de Co-Simulación en tiempo real a 30 Hz
   useEffect(() => {
     if (simulationState.mode !== 'running') return;
 
@@ -451,322 +845,471 @@ export const App: React.FC = () => {
       const now = performance.now();
       const deltaMs = Math.min(now - lastTime, 50);
       lastTime = now;
-
-      if (solverRef.current) {
-        setSimulationState(prev => {
-          const next = solverRef.current!.step(prev, deltaMs);
-          if (plcOutputsRef.current['%Q0.0']) {
-            next.activeCoils.add('-KM1');
-            const m = next.motorStates.get('mot_1') || { rpm: 0, targetRpm: 1450, direction: 1 as const, angle: 0, hasError: false };
-            next.motorStates.set('mot_1', { ...m, targetRpm: 1450, direction: 1 });
-          }
-          if (plcOutputsRef.current['%Q0.1']) {
-            next.pilotLights.set('pilot_run', { color: 'green', isLit: true });
-          }
-          return next;
-        });
-      }
-    }, 33); // ~30 Hz de cálculo nodal
+      executeCoSimulationTick(deltaMs);
+    }, 33);
 
     return () => clearInterval(interval);
-  }, [simulationState.mode]);
+  }, [simulationState.mode, executeCoSimulationTick]);
 
-  // Controles de Simulación
-  const handleStartSimulation = () => {
-    setSimulationState(prev => ({
-      ...prev,
-      mode: 'running',
-      simulationTime: 0,
-      activeCoils: new Set(),
-      energizedWires: new Set(),
-      energizedPins: new Set(),
-      timerStates: new Map(),
-      motorStates: new Map(),
-      pilotLights: new Map()
-    }));
+  const handleStartSimulation = useCallback(() => {
+    plcInputsRef.current = {};
+    plcOutputsRef.current = {};
+    const freshTia = createInitialRuntime(tiaProgramRef.current);
+    tiaRuntimeRef.current = freshTia;
+    setTiaRuntime(freshTia);
+
+    const runningSim: SimulationState = {
+      ...createEmptySimulationState(),
+      mode: 'running'
+    };
+    simStateRef.current = runningSim;
+    setSimulationState(runningSim);
     setActiveTool('select');
-  };
+  }, []);
 
-  const handleStopSimulation = () => {
-    setSimulationState(prev => ({
-      ...prev,
-      mode: 'stopped',
-      activeCoils: new Set(),
-      energizedWires: new Set(),
-      energizedPins: new Set(),
-      timerStates: new Map(),
-      motorStates: new Map(),
-      pilotLights: new Map()
-    }));
-  };
+  const handleStopSimulation = useCallback(() => {
+    plcInputsRef.current = {};
+    plcOutputsRef.current = {};
+    const freshTia = createInitialRuntime(tiaProgramRef.current);
+    tiaRuntimeRef.current = freshTia;
+    setTiaRuntime(freshTia);
 
-  const handlePauseSimulation = () => {
+    const stoppedSim = createEmptySimulationState();
+    simStateRef.current = stoppedSim;
+    setSimulationState(stoppedSim);
+  }, []);
+
+  const handlePauseSimulation = useCallback(() => {
     setSimulationState(prev => ({
       ...prev,
       mode: prev.mode === 'running' ? 'paused' : 'running'
     }));
-  };
+  }, []);
 
-  const handleStepSimulation = () => {
-    if (solverRef.current) {
-      setSimulationState(prev => solverRef.current!.step(prev, 100));
-    }
-  };
+  const handleStepSimulation = useCallback(() => {
+    executeCoSimulationTick(100);
+  }, [executeCoSimulationTick]);
 
-  // Interacción en Simulación: Conmutar disyuntor/guardamotor
-  const handleToggleBreaker = (compId: string) => {
-    if (activeFaults.has('short_circuit')) {
-      soundEffects.playShortCircuitBang();
-      setShortCircuitAlert("¡DISPARO MAGNÉTICO INSTANTÁNEO EN -Q1! Imposible rearmar: Cortocircuito franco presente.");
-      setTimeout(() => setShortCircuitAlert(null), 4500);
+  const handleToggleForceInput = useCallback((addr: string) => {
+    const key = addr.toUpperCase();
+    setTiaRuntime(prev => {
+      const nextForced = { ...prev.forcedInputs, [key]: !prev.forcedInputs[key] };
+      const updated: TiaRuntimeState = { ...prev, forcedInputs: nextForced };
+      tiaRuntimeRef.current = updated;
+      return updated;
+    });
+  }, []);
 
+  const handleToggleBreaker = useCallback(
+    (compId: string) => {
+      if (activeFaults.has('short_circuit')) {
+        soundEffects.playShortCircuitBang();
+        setShortCircuitAlert('¡DISPARO MAGNÉTICO INSTANTÁNEO EN -Q1! Cortocircuito franco presente.');
+        setTimeout(() => setShortCircuitAlert(null), 4500);
+        setDoc(prev => ({
+          ...prev,
+          components: prev.components.map(c =>
+            c.id === compId || c.type === 'breaker_3p' ? { ...c, state: { ...c.state, isOpen: true } } : c
+          )
+        }));
+        return;
+      }
+      soundEffects.playTripClick();
       setDoc(prev => ({
         ...prev,
-        components: prev.components.map(c => {
-          if (c.id === compId || c.type === 'breaker_3p') {
-            return {
-              ...c,
-              state: { ...c.state, isOpen: true }
-            };
-          }
-          return c;
-        })
+        components: prev.components.map(c =>
+          c.id === compId ? { ...c, state: { ...c.state, isOpen: !(c.state?.isOpen ?? false) } } : c
+        )
       }));
-      return;
-    }
+    },
+    [activeFaults]
+  );
 
-    soundEffects.playTripClick();
-    setDoc(prev => ({
-      ...prev,
-      components: prev.components.map(c => {
-        if (c.id === compId) {
-          const isOpen = c.state?.isOpen ?? false;
-          return {
-            ...c,
-            state: { ...c.state, isOpen: !isOpen }
-          };
-        }
-        return c;
-      })
-    }));
-  };
-
-  // Interacción en Simulación: Pulsar/Soltar botón
-  const handlePressButton = (compId: string, isPressed: boolean) => {
+  const handlePressButton = useCallback((compId: string, isPressed: boolean) => {
     soundEffects.playTripClick();
     setDoc(prev => {
-      const nextComponents = prev.components.map(c => {
-        if (c.id === compId) {
-          return {
-            ...c,
-            state: { ...c.state, isActuated: isPressed }
-          };
-        }
-        return c;
-      });
+      const nextComponents = prev.components.map(c =>
+        c.id === compId ? { ...c, state: { ...c.state, isActuated: isPressed } } : c
+      );
       if (solverRef.current) {
         solverRef.current.setComponents(nextComponents);
       }
-      return {
-        ...prev,
-        components: nextComponents
-      };
+      return { ...prev, components: nextComponents };
     });
+  }, []);
 
-    if (solverRef.current && simulationState.mode === 'running') {
-      setSimulationState(prev => solverRef.current!.step(prev, 16));
-    }
-  };
+  const handleAddComponentFromDrawer = useCallback(
+    (compType: string) => {
+      if (simStateRef.current.mode === 'running') {
+        showToast('Detén la simulación para agregar o mover componentes', 'info');
+        return;
+      }
+      const def = COMPONENT_CATALOG.find(c => c.type === compType);
+      if (!def) return;
 
-  // Selección de componentes desde la Ribbon
-  const handleSelectComponentFromRibbon = (compType: string) => {
-    const def = COMPONENT_CATALOG.find(c => c.type === compType);
-    if (!def) return;
+      const offset = (docRef.current.components.length % 5) * 2;
+      const newComp: PlacedComponent = {
+        id: `comp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        type: compType,
+        tag: `${def.defaultTag}${docRef.current.components.length + 1}`,
+        x: Math.max(2, Math.min(48, (coords.x || 12) + offset)),
+        y: Math.max(2, Math.min(34, coords.y || 10)),
+        rotation: 0,
+        state: { isOpen: false, isActuated: false }
+      };
 
-    const newComp: PlacedComponent = {
-      id: `comp_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      type: compType,
-      tag: `${def.defaultTag}${doc.components.length + 1}`,
-      x: Math.max(2, coords.x || 15),
-      y: Math.max(2, coords.y || 15),
-      rotation: 0,
-      state: { isOpen: false, isActuated: false }
-    };
+      updateDocWithHistory(prev => ({ ...prev, components: [...prev.components, newComp] }), true);
+      setSelectedComponent(newComp);
+      setSelectedWire(null);
+      setActiveTool('select');
+    },
+    [coords, showToast, updateDocWithHistory]
+  );
 
-    updateDocWithHistory(prev => ({
-      ...prev,
-      components: [...prev.components, newComp]
-    }), true);
-    setSelectedComponent(newComp);
-    setSelectedWire(null);
-    setActiveTool('select');
-  };
+  const handleLoadExample = useCallback(
+    (exampleId: string) => {
+      handleStopSimulation();
+      let nextCircuit = DIRECT_STARTER_CIRCUIT;
+      let nextTia = DEFAULT_TIA_PROGRAM;
 
-  const handleSelectWire = (wType: WireType) => {
-    setSelectedWireType(wType);
-    setActiveTool('wire');
-  };
+      if (exampleId === 'plc_s71200') {
+        nextCircuit = PLC_S71200_STARTER_CIRCUIT;
+        nextTia = DEFAULT_TIA_PROGRAM;
+      } else if (exampleId === 'pneumatic_plc') {
+        nextCircuit = PNEUMATIC_PLC_CIRCUIT;
+        nextTia = PNEUMATIC_TIA_PROGRAM;
+      } else if (exampleId === 'star_delta') {
+        nextCircuit = STAR_DELTA_CIRCUIT;
+      } else if (exampleId === 'reverse') {
+        nextCircuit = REVERSE_STARTER_CIRCUIT;
+      } else if (exampleId === 'conveyor') {
+        nextCircuit = CONVEYOR_BELT_CIRCUIT;
+      } else if (exampleId === 'water_tank') {
+        nextCircuit = WATER_TANK_PUMP_CIRCUIT;
+      }
 
-  // Carga de circuitos de ejemplo
-  const handleLoadExample = (exampleId: string) => {
+      setActiveCloudProjectId(null);
+      setSharedBanner(null);
+      setSyncStatus('idle');
+      updateDocWithHistory(nextCircuit, true);
+      setTiaProgram(nextTia);
+      setTiaRuntime(createInitialRuntime(nextTia));
+      setSelectedComponent(null);
+      setSelectedWire(null);
+      setActiveView('cad');
+      showToast(`Cargado: ${nextCircuit.titleBlock.title}`, 'info');
+      setTimeout(() => canvasRef.current?.fitToScreen(), 150);
+    },
+    [handleStopSimulation, showToast, updateDocWithHistory]
+  );
+
+  const handleNewDocument = useCallback(() => {
     handleStopSimulation();
-    let nextCircuit = DIRECT_STARTER_CIRCUIT;
-    if (exampleId === 'direct') nextCircuit = DIRECT_STARTER_CIRCUIT;
-    if (exampleId === 'star_delta') nextCircuit = STAR_DELTA_CIRCUIT;
-    if (exampleId === 'reverse') nextCircuit = REVERSE_STARTER_CIRCUIT;
-    if (exampleId === 'conveyor') nextCircuit = CONVEYOR_BELT_CIRCUIT;
-    if (exampleId === 'water_tank') nextCircuit = WATER_TANK_PUMP_CIRCUIT;
-
-    updateDocWithHistory(nextCircuit, true);
-    setSelectedComponent(null);
-    setSelectedWire(null);
-  };
-
-  const handleNewDocument = () => {
-    handleStopSimulation();
-    updateDocWithHistory({
-      version: '1.0.0',
-      gridSize: 20,
-      titleBlock: {
-        title: 'Nuevo Esquema Eléctrico',
-        project: 'Automatismos Industriales',
-        author: 'Simón Barrera Ruíz',
-        date: new Date().toISOString().split('T')[0],
-        sheet: '1/1',
-        scale: '1:1',
-        revision: '1.0',
-        company: 'Sistemas de Automatización'
+    setActiveCloudProjectId(null);
+    setSharedBanner(null);
+    setSyncStatus('idle');
+    updateDocWithHistory(
+      {
+        version: '2.0.0',
+        gridSize: 20,
+        titleBlock: {
+          title: 'Nuevo Proyecto CAD + TIA',
+          project: 'Automatización Industrial',
+          author: profile?.full_name || 'Simón Barrera Ruíz',
+          date: new Date().toISOString().split('T')[0],
+          sheet: '1/1',
+          scale: '1:1',
+          revision: '1.0',
+          company: 'Baru Studio'
+        },
+        components: [],
+        wires: [],
+        junctions: []
       },
-      components: [],
-      wires: [],
-      junctions: []
-    }, true);
+      true
+    );
     setSelectedComponent(null);
     setSelectedWire(null);
-  };
+  }, [handleStopSimulation, profile?.full_name, updateDocWithHistory]);
 
-  // Asegurar que la ventana nunca tenga scroll desfasado
+  const handleTwinPressButton = useCallback(
+    (btnKey: string, isPressed: boolean) => {
+      const targets = docRef.current.components.filter(c => {
+        if (btnKey === 'btn_start') {
+          return (
+            c.id === 'btn_start' ||
+            c.id === 'btn_start_cw' ||
+            c.tag === '-S1' ||
+            c.plcAddress === '%I0.0' ||
+            (c.type === 'button_no' && c.tag.includes('1'))
+          );
+        }
+        if (btnKey === 'btn_stop') {
+          return (
+            c.id === 'btn_stop' ||
+            c.id === 'btn_es' ||
+            c.tag === '-S0' ||
+            c.plcAddress === '%I0.1' ||
+            c.type === 'button_nc' ||
+            c.type === 'emergency_stop'
+          );
+        }
+        return false;
+      });
+
+      if (targets.length > 0) {
+        targets.forEach(t => handlePressButton(t.id, isPressed));
+      } else {
+        const addr = btnKey === 'btn_start' ? '%I0.0' : '%I0.1';
+        plcInputsRef.current = { ...plcInputsRef.current, [addr]: isPressed };
+      }
+    },
+    [handlePressButton]
+  );
+
+  // Handlers del Wizard de 5 Pasos
+  const handleReplayTutorial = useCallback(async () => {
+    setWizardInitialStep(1);
+    setIsWizardOpen(true);
+    if (user) {
+      await resetOnboarding();
+    }
+  }, [user, resetOnboarding]);
+
+  const handleSkipWizard = useCallback(async () => {
+    setIsWizardOpen(false);
+    try {
+      window.localStorage.setItem(GUEST_ONBOARDING_SEEN_KEY, 'skipped');
+      window.sessionStorage.setItem(SESSION_ONBOARDING_DONE_KEY, 'skipped');
+    } catch {
+      // Ignore storage errors
+    }
+    if (user) {
+      await skipOnboarding();
+    }
+    showToast('Tutorial omitido — puedes repetirlo desde Herramientas o tu perfil', 'info');
+  }, [user, skipOnboarding, showToast]);
+
+  const handleCompleteWizard = useCallback(async () => {
+    setIsWizardOpen(false);
+    try {
+      window.localStorage.setItem(GUEST_ONBOARDING_SEEN_KEY, 'completed');
+      window.sessionStorage.setItem(SESSION_ONBOARDING_DONE_KEY, 'completed');
+    } catch {
+      // Ignore storage errors
+    }
+    if (user) {
+      await completeOnboarding();
+    }
+    showToast('¡Tutorial completado! Ya dominas Baru Studio CAD + TIA', 'success');
+  }, [user, completeOnboarding, showToast]);
+
+  const handleSignOut = useCallback(async () => {
+    const res = await signOut();
+    if (res.success) {
+      showToast('Sesión cerrada correctamente', 'info');
+    } else if (res.error) {
+      showToast(res.error, 'error');
+    }
+  }, [signOut, showToast]);
+
+  useEffect(() => {
+    if (activeView === 'cad') {
+      const t = setTimeout(() => canvasRef.current?.fitToScreen(), 80);
+      return () => clearTimeout(t);
+    }
+  }, [activeView]);
+
   useEffect(() => {
     window.scrollTo(0, 0);
   }, []);
 
-  return (
-    <div className="fixed inset-0 flex flex-col overflow-hidden bg-[#f0f2f5] text-slate-800 font-sans">
-      {/* 1. Barra de Menús Superior */}
-      <MenuBar
-        canUndo={pastDocs.length > 0}
-        canRedo={futureDocs.length > 0}
-        hasSelection={!!selectedComponent || !!selectedWire}
-        onUndo={handleUndo}
-        onRedo={handleRedo}
-        onDeleteSelection={handleDeleteSelection}
-        onNew={handleNewDocument}
-        onOpen={handleDirectOpen}
-        onSave={handleDirectSave}
-        onExportCad={handleExportCad}
-        onExportJson={handleExportJson}
-        onLoadExample={handleLoadExample}
-        onAbout={() => setIsAboutOpen(true)}
-        onOpenAdvanced={() => setIsImportExportOpen(true)}
-      />
+  const isSimRunning = simulationState.mode === 'running' || simulationState.mode === 'paused';
+  const combinedSchemaMissing = authSchemaMissing || repoSchemaMissing;
 
-      {/* 2. Barra de Acciones y Controles Rápidos */}
-      <ToolBar
-        activeTool={activeTool}
+  return (
+    <div className="fixed inset-0 flex flex-col overflow-hidden bg-slate-100 text-slate-800 font-sans">
+      {/* Cabecera Minimalista estilo Tinkercad */}
+      <TinkerHeader
+        projectTitle={doc.titleBlock?.title || 'Sin título'}
+        onChangeTitle={newTitle =>
+          setDoc(prev => ({ ...prev, titleBlock: { ...prev.titleBlock, title: newTitle } }))
+        }
+        activeView={activeView}
+        onChangeView={setActiveView}
         simulationMode={simulationState.mode}
-        canUndo={pastDocs.length > 0}
-        canRedo={futureDocs.length > 0}
-        hasSelection={!!selectedComponent || !!selectedWire}
-        onUndo={handleUndo}
-        onRedo={handleRedo}
-        onDeleteSelection={handleDeleteSelection}
-        onSetTool={handleSetTool}
-        onNew={handleNewDocument}
-        onOpen={handleDirectOpen}
-        onSave={handleDirectSave}
         onStartSimulation={handleStartSimulation}
         onStopSimulation={handleStopSimulation}
         onPauseSimulation={handlePauseSimulation}
         onStepSimulation={handleStepSimulation}
-        onZoomIn={() => canvasRef.current?.zoomIn()}
-        onZoomOut={() => canvasRef.current?.zoomOut()}
-        onFitScreen={() => canvasRef.current?.fitToScreen()}
-        isTwinOpen={isTwinOpen}
-        onToggleTwin={() => setIsTwinOpen(!isTwinOpen)}
-        isTimingOpen={isTimingOpen}
-        onToggleTiming={() => setIsTimingOpen(!isTimingOpen)}
-        isMeterOpen={isMeterOpen}
-        onToggleMeter={() => setIsMeterOpen(!isMeterOpen)}
-        isLadderOpen={isLadderOpen}
-        onToggleLadder={() => setIsLadderOpen(!isLadderOpen)}
-        isFaultsOpen={isFaultsOpen}
-        onToggleFaults={() => setIsFaultsOpen(!isFaultsOpen)}
+        onNewProject={handleNewDocument}
+        onLoadExample={handleLoadExample}
+        onOpenImportModal={() => setExportModalTab('import')}
+        onOpenExportModal={() => setExportModalTab('export')}
+        onOpenMultimeter={() => setIsMeterOpen(true)}
+        onOpenTiming={() => setIsTimingOpen(true)}
+        onOpenFaults={() => setIsFaultsOpen(true)}
+        onOpenReport={() => setIsReportOpen(true)}
+        onOpenAbout={() => setIsAboutOpen(true)}
         hasActiveFault={activeFaults.size > 0}
         isExamActive={examSession.isActive}
-        onOpenReport={() => setIsReportOpen(true)}
+        isAuthenticated={!!user}
+        userDisplayName={profile?.full_name || user?.email?.split('@')[0] || ''}
+        userEmail={user?.email || ''}
+        syncStatus={syncStatus}
+        hasActiveCloudProject={!!activeCloudProjectId}
+        onSaveToCloud={() => performCloudSave()}
+        onOpenProjects={(tab = 'projects') => setProjectsModalTab(tab)}
+        onOpenAuth={(mode = 'login') => setAuthModalState({ open: true, mode, reason: null })}
+        onSignOut={handleSignOut}
+        onReplayTutorial={handleReplayTutorial}
       />
 
-      {/* 3. Cinta de Componentes Categorizada */}
-      <ComponentRibbon
-        selectedTool={activeTool}
-        selectedWireType={selectedWireType}
-        onSelectComponent={handleSelectComponentFromRibbon}
-        onSelectWire={handleSelectWire}
-        onResetTool={() => { setActiveTool('select'); setSelectedWireType(null); }}
-      />
-
-      {/* 4. Área de Trabajo Principal (Lienzo Esquemático + Overlays Pro) */}
-      <div className="relative flex-1 w-full h-full overflow-hidden">
-        <SchematicCanvas
-          ref={canvasRef}
-          document={doc}
-          simulationState={simulationState}
-          activeWireType={selectedWireType}
-          activeTool={activeTool}
-          selectedWireId={selectedWire?.id || null}
-          onSetTool={handleSetTool}
-          onUpdateDocument={(newDoc, saveHistory = true, prevSnapshot) => {
-            updateDocWithHistory(newDoc, saveHistory, prevSnapshot);
-          }}
-          onComponentSelect={(c) => {
-            setSelectedComponent(c);
-            if (c) setSelectedWire(null);
-          }}
-          onWireSelect={(w) => {
-            setSelectedWire(w);
-            if (w) setSelectedComponent(null);
-          }}
-          onComponentEdit={setEditingComponent}
-          onCoordinatesChange={(x, y) => setCoords({ x, y })}
-          onToggleBreaker={handleToggleBreaker}
-          onPressButton={handlePressButton}
+      {/* Banner de Proyecto Compartido Público (?share=...) */}
+      {sharedBanner && (
+        <SharedProjectBanner
+          projectTitle={sharedBanner.title}
+          shareSlug={sharedBanner.slug}
+          isAuthenticated={!!user}
+          isCloning={isCloningShared}
+          onCloneToMyAccount={handleCloneSharedProject}
+          onDismiss={handleDismissSharedBanner}
         />
+      )}
 
-        {/* Indicador Flotante de Averías Inyectadas en el Circuito */}
+      {/* Área Principal de Trabajo según Pestaña */}
+      <div className="relative flex-1 flex overflow-hidden">
+        {activeView === 'cad' && (
+          <div data-tour="cad-workspace" className="relative flex-1 flex overflow-hidden">
+            <div className="relative flex-1 overflow-hidden">
+              <SchematicCanvas
+                ref={canvasRef}
+                document={doc}
+                simulationState={simulationState}
+                activeWireType={selectedWireType}
+                activeTool={activeTool}
+                selectedWireId={selectedWire?.id || null}
+                onSetTool={setActiveTool}
+                onUpdateDocument={(newDoc, saveHistory = true, prevSnapshot) => {
+                  updateDocWithHistory(newDoc, saveHistory, prevSnapshot);
+                }}
+                onComponentSelect={c => {
+                  setSelectedComponent(c);
+                  if (c) setSelectedWire(null);
+                }}
+                onWireSelect={w => {
+                  setSelectedWire(w);
+                  if (w) setSelectedComponent(null);
+                }}
+                onComponentEdit={setEditingComponent}
+                onCoordinatesChange={(x, y) => setCoords({ x, y })}
+                onToggleBreaker={handleToggleBreaker}
+                onPressButton={handlePressButton}
+              />
+
+              {/* Píldora flotante izquierda de acciones CAD */}
+              <TinkerFloatingBar
+                activeTool={activeTool}
+                selectedWireType={selectedWireType}
+                canUndo={pastDocs.length > 0}
+                canRedo={futureDocs.length > 0}
+                hasSelection={!!selectedComponent || !!selectedWire}
+                isDrawerOpen={isDrawerOpen}
+                isSimRunning={isSimRunning}
+                onSetTool={setActiveTool}
+                onSelectWireType={setSelectedWireType}
+                onRotateSelected={() => handleRotateComponent()}
+                onUndo={handleUndo}
+                onRedo={handleRedo}
+                onDelete={handleDeleteSelection}
+                onFitScreen={() => canvasRef.current?.fitToScreen()}
+                onToggleDrawer={() => setIsDrawerOpen(!isDrawerOpen)}
+              />
+
+              {/* Inspector Contextual (solo visible cuando hay selección) */}
+              <TinkerInspector
+                selectedComponent={selectedComponent}
+                selectedWire={selectedWire}
+                isSimRunning={isSimRunning}
+                onUpdateComponent={updated => {
+                  setSelectedComponent(updated);
+                  updateDocWithHistory(
+                    prev => ({
+                      ...prev,
+                      components: prev.components.map(c => (c.id === updated.id ? updated : c))
+                    }),
+                    true
+                  );
+                }}
+                onRotateComponent={handleRotateComponent}
+                onDeleteSelection={handleDeleteSelection}
+                onClearSelection={() => {
+                  setSelectedComponent(null);
+                  setSelectedWire(null);
+                }}
+                onOpenDetailedModal={setEditingComponent}
+              />
+            </div>
+
+            {/* Cajón derecho buscable de componentes */}
+            <TinkerComponentDrawer
+              isOpen={isDrawerOpen}
+              onClose={() => setIsDrawerOpen(false)}
+              onAddComponent={handleAddComponentFromDrawer}
+            />
+          </div>
+        )}
+
+        {activeView === 'tia' && (
+          <div data-tour="tia-workspace" className="flex-1 flex overflow-hidden">
+            <TiaWorkspaceView
+              program={tiaProgram}
+              runtime={tiaRuntime}
+              simulationMode={simulationState.mode}
+              onChangeProgram={next => setTiaProgram(next)}
+              onToggleForceInput={handleToggleForceInput}
+              onShowToast={showToast}
+            />
+          </div>
+        )}
+
+        {activeView === 'plant' && (
+          <div className="flex-1 overflow-y-auto p-6 bg-slate-100 flex items-center justify-center">
+            <DigitalTwinPlant
+              embeddedMode
+              isOpen
+              simulationState={simulationState}
+              document={doc}
+              onPressButton={handleTwinPressButton}
+              onClose={() => setActiveView('cad')}
+            />
+          </div>
+        )}
+
+        {/* Alertas flotantes de Avería o Cortocircuito */}
         {activeFaults.size > 0 && !examSession.isActive && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-1.5 bg-rose-600/95 backdrop-blur-xs text-white text-xs font-bold rounded-full shadow-xl border border-rose-400 animate-in fade-in duration-200 select-none">
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-1.5 bg-rose-600/95 backdrop-blur-xs text-white text-xs font-bold rounded-full shadow-xl border border-rose-400 select-none">
             <AlertOctagon className="w-4 h-4 text-amber-300 animate-pulse shrink-0" />
             <span>
               {activeFaults.size === 1
                 ? `Avería Activa: ${Array.from(activeFaults).map(f => FAULT_CATALOG.find(cat => cat.id === f)?.shortName || f).join(', ')}`
-                : `${activeFaults.size} Averías Activas en Simulación`}
+                : `${activeFaults.size} Averías Activas`}
             </span>
             <button
               onClick={() => setIsFaultsOpen(true)}
-              className="px-2 py-0.5 ml-1 bg-white hover:bg-slate-100 text-rose-700 text-[11px] font-extrabold rounded-md shadow-2xs transition-colors cursor-pointer"
+              className="px-2 py-0.5 bg-white text-rose-700 text-[11px] font-extrabold rounded-md cursor-pointer"
             >
               Inspeccionar
             </button>
             <button
               onClick={handleResetFaults}
-              className="px-2 py-0.5 bg-rose-800 hover:bg-rose-900 text-rose-100 text-[11px] rounded-md transition-colors cursor-pointer"
+              className="px-2 py-0.5 bg-rose-800 text-rose-100 text-[11px] rounded-md cursor-pointer"
             >
               Restablecer
             </button>
           </div>
         )}
 
-        {/* Alerta crítica de cortocircuito franco */}
         {shortCircuitAlert && (
           <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 px-4 py-2 bg-red-700 text-white text-xs font-black rounded-lg shadow-2xl border-2 border-amber-400 animate-bounce select-none">
             <AlertOctagon className="w-5 h-5 text-amber-300 shrink-0" />
@@ -774,51 +1317,7 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Gemelo Digital 2D de Planta Virtual (tipo PC_SIMU) */}
-        <DigitalTwinPlant
-          simulationState={simulationState}
-          onPressButton={(btnKey, isPressed) => {
-            const targets = doc.components.filter(c => {
-              if (btnKey === 'btn_start') {
-                return (
-                  c.id === 'btn_start' ||
-                  c.id === 'btn_start_cw' ||
-                  c.tag === '-S1' ||
-                  c.tag === 'I' ||
-                  (c.type === 'button_no' && (c.tag === '-S1' || c.tag === 'I' || c.tag.includes('1')))
-                );
-              }
-              if (btnKey === 'btn_stop') {
-                return (
-                  c.id === 'btn_stop' ||
-                  c.id === 'btn_es' ||
-                  c.tag === '-S0' ||
-                  c.tag === '-S2' ||
-                  c.tag === 'O' ||
-                  c.type === 'button_nc' ||
-                  c.type === 'emergency_stop' ||
-                  (c.tag && (c.tag.toLowerCase().includes('stop') || c.tag.toLowerCase().includes('parada')))
-                );
-              }
-              return false;
-            });
-
-            if (targets.length > 0) {
-              targets.forEach(target => handlePressButton(target.id, isPressed));
-            } else {
-              const fallback = doc.components.find(c => 
-                btnKey === 'btn_start' 
-                  ? c.type === 'button_no' 
-                  : (c.type === 'button_nc' || c.type === 'emergency_stop')
-              );
-              if (fallback) handlePressButton(fallback.id, isPressed);
-            }
-          }}
-          isOpen={isTwinOpen}
-          onClose={() => setIsTwinOpen(false)}
-        />
-
-        {/* Analizador Lógico & Cronograma de Señales */}
+        {/* Herramientas Avanzadas Flotantes */}
         <TimingDiagram
           simulationState={simulationState}
           document={doc}
@@ -826,7 +1325,6 @@ export const App: React.FC = () => {
           onClose={() => setIsTimingOpen(false)}
         />
 
-        {/* Multímetro Industrial Fluke */}
         <VirtualMultimeter
           simulationState={simulationState}
           isOpen={isMeterOpen}
@@ -835,67 +1333,108 @@ export const App: React.FC = () => {
         />
       </div>
 
-      {/* 5. Barra de Estado Inferior */}
-      <StatusBar
-        coordX={coords.x}
-        coordY={coords.y}
-        simulationState={simulationState}
-        componentCount={doc.components.length}
-        wireCount={doc.wires.length}
-        activeTool={activeTool}
+      {/* Modales Cloud & Auth */}
+      <AuthModal
+        isOpen={authModalState.open}
+        initialMode={authModalState.mode}
+        reasonMessage={authModalState.reason}
+        onClose={() => setAuthModalState(prev => ({ ...prev, open: false }))}
+        onAuthSuccess={isNew => {
+          showToast(
+            isNew ? '¡Bienvenido! Tu cuenta fue creada con éxito' : 'Sesión iniciada correctamente',
+            'success'
+          );
+        }}
       />
 
-      {/* Modales */}
+      <ProjectsModal
+        isOpen={!!projectsModalTab}
+        initialTab={projectsModalTab || 'projects'}
+        activeProjectId={activeCloudProjectId}
+        projects={cloudProjects}
+        examAttempts={examAttempts}
+        isLoading={isLoadingCloud}
+        schemaMissing={combinedSchemaMissing}
+        isAuthenticated={!!user}
+        onClose={() => setProjectsModalTab(null)}
+        onOpenAuth={(mode = 'login') => {
+          setProjectsModalTab(null);
+          setAuthModalState({ open: true, mode, reason: null });
+        }}
+        onRefresh={() => {
+          if (user?.id) refreshCloudData(user.id);
+        }}
+        onOpenProject={handleOpenCloudProject}
+        onSaveAsNew={() => performCloudSave({ forceNew: true })}
+        onDuplicateProject={handleDuplicateCloudProject}
+        onDeleteProject={handleDeleteCloudProject}
+        onToggleShare={handleToggleShareProject}
+        onCopyShareLink={handleCopyShareLink}
+      />
+
+      {/* Wizard Tutorial Interactivo de 5 Pasos (Onboarding) */}
+      <OnboardingWizard
+        isOpen={isWizardOpen}
+        initialStep={wizardInitialStep}
+        onChangeView={setActiveView}
+        onSetDrawerOpen={setIsDrawerOpen}
+        onStepChange={step => {
+          if (user) {
+            setOnboardingStep(step);
+          }
+        }}
+        onSkip={handleSkipWizard}
+        onComplete={handleCompleteWizard}
+      />
+
+      {/* Modales de Edición, Exportación y Diagnóstico */}
       {editingComponent && (
         <ComponentEditModal
           component={editingComponent}
           isOpen={!!editingComponent}
           onClose={() => setEditingComponent(null)}
           onSave={updated => {
-            updateDocWithHistory(prev => ({
-              ...prev,
-              components: prev.components.map(c => c.id === updated.id ? updated : c)
-            }), true);
+            setSelectedComponent(updated);
+            updateDocWithHistory(
+              prev => ({
+                ...prev,
+                components: prev.components.map(c => (c.id === updated.id ? updated : c))
+              }),
+              true
+            );
           }}
         />
       )}
 
-      {isImportExportOpen && (
-        <ImportExportModal
-          isOpen={isImportExportOpen}
+      {exportModalTab && (
+        <UnifiedExportModal
+          isOpen={!!exportModalTab}
+          initialTab={exportModalTab}
           document={doc}
-          onClose={() => setIsImportExportOpen(false)}
-          onImportDocument={newDoc => {
+          tiaProgram={tiaProgram}
+          onClose={() => setExportModalTab(null)}
+          onImportCircuit={newDoc => {
             handleStopSimulation();
             updateDocWithHistory(newDoc, true);
+            setSelectedComponent(null);
+            setSelectedWire(null);
+            setActiveView('cad');
+            setTimeout(() => canvasRef.current?.fitToScreen(), 150);
           }}
+          onImportTiaProgram={newProg => {
+            handleStopSimulation();
+            setTiaProgram(newProg);
+            setTiaRuntime(createInitialRuntime(newProg));
+            setActiveView('tia');
+          }}
+          onShowToast={showToast}
         />
       )}
 
-      {isAboutOpen && (
-        <AboutModal
-          isOpen={isAboutOpen}
-          onClose={() => setIsAboutOpen(false)}
-        />
-      )}
+      {isAboutOpen && <AboutModal isOpen={isAboutOpen} onClose={() => setIsAboutOpen(false)} />}
 
-      {/* Memoria Técnica de Instalación & Lista de Materiales (BOM) */}
-      <LabReportModal
-        isOpen={isReportOpen}
-        document={doc}
-        onClose={() => setIsReportOpen(false)}
-      />
+      <LabReportModal isOpen={isReportOpen} document={doc} onClose={() => setIsReportOpen(false)} />
 
-      {/* Editor y Simulador de PLC Ladder & GRAFCET */}
-      <LadderEditorModal
-        isOpen={isLadderOpen}
-        onClose={() => setIsLadderOpen(false)}
-        document={doc}
-        simulationState={simulationState}
-        onUpdatePlcOutputs={handlePlcOutputsChange}
-      />
-
-      {/* Inyector & Diagnóstico Didáctico de Averías Eléctricas y Modo Examen */}
       <FaultInjectorModal
         isOpen={isFaultsOpen}
         onClose={() => setIsFaultsOpen(false)}
@@ -910,24 +1449,17 @@ export const App: React.FC = () => {
         simulationState={simulationState}
       />
 
-      {/* Selector nativo de archivos para Abrir (.cad / .json) */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".cad,.json,.txt"
-        className="hidden"
-        onChange={handleFileInputChange}
-      />
-
-      {/* Notificación Toast flotante de retroalimentación limpia */}
+      {/* Notificaciones Toast */}
       {toast && (
-        <div className={`fixed bottom-10 right-6 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-lg shadow-2xl text-xs font-semibold select-none animate-in fade-in slide-in-from-bottom-3 duration-200 ${
-          toast.type === 'error'
-            ? 'bg-rose-700 text-white border border-rose-500'
-            : toast.type === 'info'
-              ? 'bg-blue-700 text-white border border-blue-500'
-              : 'bg-slate-900/95 text-emerald-400 border border-emerald-500/60 backdrop-blur-md'
-        }`}>
+        <div
+          className={`fixed bottom-6 right-6 z-[80] flex items-center gap-2.5 px-4 py-2.5 rounded-2xl shadow-2xl text-xs font-semibold select-none animate-in fade-in slide-in-from-bottom-3 duration-200 ${
+            toast.type === 'error'
+              ? 'bg-rose-700 text-white border border-rose-500'
+              : toast.type === 'info'
+                ? 'bg-sky-700 text-white border border-sky-500'
+                : 'bg-slate-900/95 text-emerald-400 border border-emerald-500/60 backdrop-blur-md'
+          }`}
+        >
           {toast.type === 'error' ? (
             <AlertCircle className="w-4 h-4 text-white shrink-0" />
           ) : toast.type === 'info' ? (

@@ -610,7 +610,10 @@ export const ComponentRenderer: React.FC<Props> = ({
       // ----------------------------------------------------
       // PLC (MÓDULOS DE AUTÓMATA & LADDER)
       // ----------------------------------------------------
-      case 'plc_cpu_s71200':
+      case 'plc_cpu_s71200': {
+        const isRunning = simulationState.mode === 'running';
+        const inputPins = ['I0', 'I1', 'I2', 'I3', 'I4'];
+        const outputPins = ['Q0', 'Q1', 'Q2', 'Q3'];
         return (
           <g>
             {/* Chasis principal Siemens S7-1200 */}
@@ -618,31 +621,62 @@ export const ComponentRenderer: React.FC<Props> = ({
             
             {/* Franja superior de bornas (Entradas) */}
             <rect x={gridSize * 0.5} y={gridSize * 0.7} width={width - gridSize * 1.0} height={gridSize * 1.1} rx={3} className="fill-[#0f172a] stroke-[#475569] stroke-1" />
-            <text x={gridSize * 1.0} y={gridSize * 1.4} className="text-[9px] font-mono font-bold fill-amber-400">24V DC IN</text>
-            <text x={gridSize * 5.0} y={gridSize * 1.4} className="text-[9px] font-mono font-bold fill-slate-300">DIa .0 .1 .2 .3 .4</text>
+            <text x={gridSize * 0.75} y={gridSize * 1.4} className="text-[8px] font-mono font-bold fill-amber-400">24V IN</text>
+            <text x={width - gridSize * 0.75} y={gridSize * 1.4} textAnchor="end" className="text-[8px] font-mono font-bold fill-slate-300">DI .0 .1 .2 .3 .4</text>
 
-            {/* LEDs de estado de entradas */}
-            {[3, 4, 5, 6, 7].map((pinX, i) => (
-              <circle key={i} cx={gridSize * pinX} cy={gridSize * 2.1} r={2.5} className="fill-emerald-500 shadow-sm" />
-            ))}
+            {/* LEDs dinámicos de estado de entradas DI .0 - .4 */}
+            {inputPins.map((pId, i) => {
+              const isHigh =
+                isRunning &&
+                (simulationState.energizedPins.has(`${component.id}:${pId}`) ||
+                  simulationState.activeCoils.has(`PLC:%I0.${i}`));
+              return (
+                <circle
+                  key={pId}
+                  cx={gridSize * (3 + i)}
+                  cy={gridSize * 2.1}
+                  r={3}
+                  className={isHigh ? 'fill-emerald-400 drop-shadow-[0_0_5px_rgba(52,211,153,0.9)]' : 'fill-slate-600'}
+                />
+              );
+            })}
 
             {/* Pantalla / Panel central */}
             <rect x={gridSize * 0.5} y={gridSize * 2.5} width={width - gridSize * 1.0} height={gridSize * 2.0} rx={3} className="fill-[#0f172a] stroke-[#38bdf8]/40 stroke-1" />
             <text x={gridSize * 1.0} y={gridSize * 3.4} className="text-xs font-bold font-sans fill-white tracking-wider">SIEMENS</text>
-            <text x={gridSize * 1.0} y={gridSize * 4.1} className="text-[10px] font-mono font-semibold fill-cyan-400">SIMATIC S7-1200</text>
-            <text x={width - gridSize * 1.8} y={gridSize * 3.7} className="text-[10px] font-mono font-bold fill-emerald-400 animate-pulse">RUN</text>
+            <text x={gridSize * 1.0} y={gridSize * 4.1} className="text-[10px] font-mono font-semibold fill-cyan-400">CPU 1214C DC/DC/DC</text>
+            <text
+              x={width - gridSize * 2.0}
+              y={gridSize * 3.7}
+              className={`text-[10px] font-mono font-bold ${isRunning ? 'fill-emerald-400 animate-pulse' : 'fill-amber-400'}`}
+            >
+              {isRunning ? '● RUN' : '■ STOP'}
+            </text>
 
-            {/* LEDs de salidas */}
-            {[3, 4, 5, 6].map((pinX, i) => (
-              <circle key={i} cx={gridSize * pinX} cy={gridSize * 4.8} r={2.5} className="fill-amber-400" />
-            ))}
+            {/* LEDs dinámicos de salidas DQ .0 - .3 */}
+            {outputPins.map((pId, i) => {
+              const isHigh =
+                isRunning &&
+                (simulationState.energizedPins.has(`${component.id}:${pId}`) ||
+                  simulationState.activeCoils.has(`PLC:%Q0.${i}`));
+              return (
+                <circle
+                  key={pId}
+                  cx={gridSize * (3 + i)}
+                  cy={gridSize * 4.8}
+                  r={3}
+                  className={isHigh ? 'fill-emerald-400 drop-shadow-[0_0_5px_rgba(52,211,153,0.9)]' : 'fill-slate-600'}
+                />
+              );
+            })}
 
             {/* Franja inferior de bornas (Salidas a Relé) */}
             <rect x={gridSize * 0.5} y={gridSize * 5.1} width={width - gridSize * 1.0} height={gridSize * 1.1} rx={3} className="fill-[#0f172a] stroke-[#475569] stroke-1" />
-            <text x={gridSize * 1.0} y={gridSize * 5.8} className="text-[9px] font-mono font-bold fill-emerald-400">RELAY OUT</text>
-            <text x={gridSize * 4.5} y={gridSize * 5.8} className="text-[9px] font-mono font-bold fill-slate-300">DQa .0 .1 .2 .3</text>
+            <text x={gridSize * 0.75} y={gridSize * 5.8} className="text-[8px] font-mono font-bold fill-emerald-400">RELAY OUT</text>
+            <text x={width - gridSize * 0.75} y={gridSize * 5.8} textAnchor="end" className="text-[8px] font-mono font-bold fill-slate-300">DQ .0 .1 .2 .3</text>
           </g>
         );
+      }
 
       case 'plc_logo':
         return (
@@ -725,6 +759,115 @@ export const ComponentRenderer: React.FC<Props> = ({
         );
       }
 
+      // ----------------------------------------------------
+      // NEUMÁTICA Y ELECTROVÁLVULAS 5/2
+      // ----------------------------------------------------
+      case 'pneumatic_cylinder_da': {
+        const pneu = simulationState.pneumaticStates?.get(component.id);
+        const pos = pneu ? pneu.position : (component.state?.pistonPos ?? 0);
+        const atStart = pneu ? pneu.atStart : pos <= 0.05;
+        const atEnd = pneu ? pneu.atEnd : pos >= 0.95;
+        const prefix = (component.tag || '-A').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'a';
+        const barrelW = gridSize * 4.5;
+        const pistonTravel = gridSize * 2.8;
+        const pistonX = gridSize * 0.4 + pos * pistonTravel;
+
+        return (
+          <g>
+            {/* Sensores magnéticos de fin de carrera */}
+            <g transform={`translate(${gridSize * 0.6}, ${gridSize * 0.25})`}>
+              <rect x={-10} y={0} width={20} height={11} rx={3} className={atStart ? 'fill-emerald-500 stroke-emerald-700' : 'fill-slate-200 stroke-slate-400'} />
+              <text x={0} y={8} textAnchor="middle" className={`text-[8px] font-mono font-bold ${atStart ? 'fill-white' : 'fill-slate-700'}`}>
+                {`${prefix}0`}
+              </text>
+            </g>
+            <g transform={`translate(${gridSize * 4.1}, ${gridSize * 0.25})`}>
+              <rect x={-10} y={0} width={20} height={11} rx={3} className={atEnd ? 'fill-emerald-500 stroke-emerald-700' : 'fill-slate-200 stroke-slate-400'} />
+              <text x={0} y={8} textAnchor="middle" className={`text-[8px] font-mono font-bold ${atEnd ? 'fill-white' : 'fill-slate-700'}`}>
+                {`${prefix}1`}
+              </text>
+            </g>
+
+            {/* Camisa del cilindro */}
+            <rect x={gridSize * 0.2} y={gridSize * 0.9} width={barrelW} height={gridSize * 1.4} rx={3} className="fill-slate-100 stroke-slate-800 stroke-2" />
+            {/* Cámara de presión izquierda (A+) */}
+            <rect
+              x={gridSize * 0.3}
+              y={gridSize * 0.98}
+              width={Math.max(2, pistonX - gridSize * 0.3)}
+              height={gridSize * 1.24}
+              className={pneu?.isExtending ? 'fill-sky-300/60' : 'fill-sky-200/30'}
+            />
+            {/* Émbolo interno */}
+            <rect x={pistonX} y={gridSize * 0.95} width={gridSize * 0.45} height={gridSize * 1.3} rx={1} className="fill-sky-700 stroke-slate-900 stroke-1" />
+            {/* Vástago extensible */}
+            <rect
+              x={pistonX + gridSize * 0.45}
+              y={gridSize * 1.42}
+              width={gridSize * 3.0}
+              height={gridSize * 0.36}
+              className="fill-slate-300 stroke-slate-800 stroke-1.5"
+            />
+            {/* Cabeza roscada del vástago */}
+            <rect
+              x={pistonX + gridSize * 3.45}
+              y={gridSize * 1.25}
+              width={gridSize * 0.3}
+              height={gridSize * 0.7}
+              rx={1}
+              className="fill-slate-700"
+            />
+            {/* Racores neumáticos A+ / A- */}
+            <line x1={gridSize * 0.55} y1={gridSize * 2.3} x2={gridSize * 0.55} y2={gridSize * 2.8} className="stroke-sky-600 stroke-2" />
+            <line x1={gridSize * 4.35} y1={gridSize * 2.3} x2={gridSize * 4.35} y2={gridSize * 2.8} className="stroke-sky-600 stroke-2" />
+          </g>
+        );
+      }
+
+      case 'solenoid_valve_5_2': {
+        const y1Active = simulationState.activeCoils.has(`${component.tag}:Y1`) || simulationState.activeCoils.has('Y1');
+        const y2Active = simulationState.activeCoils.has(`${component.tag}:Y2`) || simulationState.activeCoils.has('Y2');
+        return (
+          <g>
+            {/* Bornas eléctricas */}
+            <line x1={gridSize} y1={0} x2={gridSize} y2={gridSize * 0.9} className="stroke-slate-900 stroke-2" />
+            <line x1={gridSize} y1={gridSize * 2.1} x2={gridSize} y2={height} className="stroke-slate-900 stroke-2" />
+            <line x1={gridSize * 5} y1={0} x2={gridSize * 5} y2={gridSize * 0.9} className="stroke-slate-900 stroke-2" />
+            <line x1={gridSize * 5} y1={gridSize * 2.1} x2={gridSize * 5} y2={height} className="stroke-slate-900 stroke-2" />
+
+            {/* Solenoide izquierdo Y1 (Avance) */}
+            <rect
+              x={gridSize * 0.4}
+              y={gridSize * 0.9}
+              width={gridSize * 1.1}
+              height={gridSize * 1.2}
+              rx={2}
+              className={`stroke-2 ${y1Active ? 'fill-emerald-100 stroke-emerald-600' : 'fill-white stroke-slate-800'}`}
+            />
+            <text x={gridSize * 0.95} y={gridSize * 1.65} textAnchor="middle" className="text-[9px] font-mono font-bold fill-slate-900">Y1</text>
+
+            {/* Celdas 5/2 ISO 1219 */}
+            <rect x={gridSize * 1.5} y={gridSize * 0.75} width={gridSize * 1.5} height={gridSize * 1.5} className={`stroke-2 ${y1Active ? 'fill-sky-50 stroke-sky-600' : 'fill-white stroke-slate-900'}`} />
+            <rect x={gridSize * 3.0} y={gridSize * 0.75} width={gridSize * 1.5} height={gridSize * 1.5} className={`stroke-2 ${y2Active ? 'fill-amber-50 stroke-amber-600' : 'fill-white stroke-slate-900'}`} />
+            {/* Flechas simbólicas */}
+            <line x1={gridSize * 1.8} y1={gridSize * 2.0} x2={gridSize * 2.25} y2={gridSize * 1.0} className="stroke-slate-800 stroke-1.5" />
+            <line x1={gridSize * 2.7} y1={gridSize * 2.0} x2={gridSize * 2.7} y2={gridSize * 1.0} className="stroke-slate-800 stroke-1.5" />
+            <line x1={gridSize * 3.4} y1={gridSize * 1.0} x2={gridSize * 3.9} y2={gridSize * 2.0} className="stroke-slate-800 stroke-1.5" />
+
+            {/* Solenoide derecho Y2 (Retorno) */}
+            <rect
+              x={gridSize * 4.5}
+              y={gridSize * 0.9}
+              width={gridSize * 1.1}
+              height={gridSize * 1.2}
+              rx={2}
+              className={`stroke-2 ${y2Active ? 'fill-amber-100 stroke-amber-600' : 'fill-white stroke-slate-800'}`}
+            />
+            <text x={gridSize * 5.05} y={gridSize * 1.65} textAnchor="middle" className="text-[9px] font-mono font-bold fill-slate-900">Y2</text>
+          </g>
+        );
+      }
+
       default:
         return (
           <rect x={0} y={0} width={width} height={height} className="fill-white stroke-slate-800 stroke-1" />
@@ -778,7 +921,7 @@ export const ComponentRenderer: React.FC<Props> = ({
       {/* Símbolo esquemático */}
       {renderSymbol()}
 
-      {/* Etiqueta de referencia (Tag) */}
+      {/* Etiqueta de referencia (Tag) y Vínculo PLC TIA */}
       <text
         x={width + 4}
         y={gridSize * 1.2}
@@ -786,6 +929,14 @@ export const ComponentRenderer: React.FC<Props> = ({
       >
         {component.tag}
       </text>
+      {component.plcAddress && (
+        <g transform={`translate(${width + 4}, ${gridSize * 1.45})`} className="pointer-events-none">
+          <rect x={0} y={0} width={Math.max(36, component.plcAddress.length * 6.5)} height={14} rx={4} className="fill-sky-100 stroke-sky-500 stroke-1" />
+          <text x={4} y={10} className="text-[9px] font-mono font-bold fill-sky-800 select-none">
+            {component.plcAddress}
+          </text>
+        </g>
+      )}
     </g>
   );
 };

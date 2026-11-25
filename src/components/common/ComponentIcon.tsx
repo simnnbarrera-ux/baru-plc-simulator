@@ -373,11 +373,9 @@ export const ComponentIcon: React.FC<ComponentIconProps> = ({ type, className = 
         <svg width={size} height={size} viewBox="0 0 28 28" className={className}>
           <rect x="4" y="5" width="20" height="18" rx="2" fill="#f8fafc" stroke="#334155" strokeWidth="1.5" />
           <text x="14" y="13" textAnchor="middle" fontSize="6.5" fontWeight="bold" fill="#0f172a">DI</text>
-          <div className="flex">
-            {[8, 12, 16, 20].map(cx => (
-              <circle key={cx} cx={cx} cy="18" r="1.2" fill="#10b981" />
-            ))}
-          </div>
+          {[8, 12, 16, 20].map(cx => (
+            <circle key={cx} cx={cx} cy="18" r="1.2" fill="#10b981" />
+          ))}
         </svg>
       );
 
@@ -439,6 +437,72 @@ export const ComponentIcon: React.FC<ComponentIconProps> = ({ type, className = 
         </svg>
       );
     }
+
+    case 'limit_switch_no':
+    case 'limit_switch_nc':
+      return (
+        <svg width={size} height={size} viewBox="0 0 28 28" className={className}>
+          <line x1="14" y1="3" x2="14" y2="9" stroke="#0f172a" strokeWidth="1.5" />
+          <line x1={type.includes('nc') ? '14' : '18'} y1="9" x2="14" y2="19" stroke="#d97706" strokeWidth="1.8" />
+          <circle cx="20" cy="13" r="2.2" fill="#fbbf24" stroke="#b45309" strokeWidth="1" />
+          <line x1="14" y1="19" x2="14" y2="25" stroke="#0f172a" strokeWidth="1.5" />
+        </svg>
+      );
+
+    case 'coil_timer_tof':
+      return (
+        <svg width={size} height={size} viewBox="0 0 28 28" className={className}>
+          <line x1="14" y1="3" x2="14" y2="8" stroke="#0f172a" strokeWidth="1.5" />
+          <rect x="8" y="8" width="12" height="12" rx="1.5" fill="#1e293b" stroke="#0f172a" strokeWidth="1.5" />
+          <line x1="14" y1="20" x2="14" y2="25" stroke="#0f172a" strokeWidth="1.5" />
+          <text x="14" y="16" textAnchor="middle" fontSize="6" fontWeight="bold" fill="#38bdf8">TOF</text>
+        </svg>
+      );
+
+    case 'motor_1phase':
+    case 'motor_3phase_6p':
+      return (
+        <svg width={size} height={size} viewBox="0 0 28 28" className={className}>
+          <line x1="10" y1="3" x2="10" y2="8" stroke="#0f172a" strokeWidth="1.5" />
+          <line x1="14" y1="3" x2="14" y2="8" stroke="#0f172a" strokeWidth="1.5" />
+          <line x1="18" y1="3" x2="18" y2="8" stroke="#0f172a" strokeWidth="1.5" />
+          <circle cx="14" cy="17" r="8" fill="#f0f9ff" stroke="#0284c7" strokeWidth="1.8" />
+          <text x="14" y="16.5" textAnchor="middle" fontSize="7.5" fontWeight="bold" fill="#0369a1">M</text>
+          <text x="14" y="22" textAnchor="middle" fontSize="5.5" fontWeight="bold" fill="#0284c7">
+            {type === 'motor_1phase' ? '1~' : 'Y-Δ'}
+          </text>
+        </svg>
+      );
+
+    case 'horn_siren':
+      return (
+        <svg width={size} height={size} viewBox="0 0 28 28" className={className}>
+          <path d="M 8 11 L 14 11 L 20 6 L 20 22 L 14 17 L 8 17 Z" fill="#fef3c7" stroke="#d97706" strokeWidth="1.6" />
+        </svg>
+      );
+
+    case 'pneumatic_cylinder_da':
+      return (
+        <svg width={size} height={size} viewBox="0 0 28 28" className={className}>
+          <rect x="3" y="8" width="15" height="12" rx="1.5" fill="#e2e8f0" stroke="#334155" strokeWidth="1.5" />
+          <rect x="6" y="9.5" width="3" height="9" fill="#0284c7" />
+          <rect x="9" y="12.5" width="16" height="3" fill="#94a3b8" stroke="#334155" strokeWidth="0.9" />
+          <circle cx="5" cy="6" r="1.5" fill="#10b981" />
+          <circle cx="16" cy="6" r="1.5" fill="#cbd5e1" />
+        </svg>
+      );
+
+    case 'solenoid_valve_5_2':
+      return (
+        <svg width={size} height={size} viewBox="0 0 28 28" className={className}>
+          <rect x="3" y="10" width="4" height="8" fill="#fee2e2" stroke="#dc2626" strokeWidth="1.2" />
+          <rect x="7" y="9" width="7" height="10" fill="#ffffff" stroke="#0f172a" strokeWidth="1.3" />
+          <rect x="14" y="9" width="7" height="10" fill="#ffffff" stroke="#0f172a" strokeWidth="1.3" />
+          <rect x="21" y="10" width="4" height="8" fill="#dbeafe" stroke="#2563eb" strokeWidth="1.2" />
+          <line x1="9" y1="17" x2="12" y2="11" stroke="#0f172a" strokeWidth="1.1" />
+          <line x1="16" y1="11" x2="19" y2="17" stroke="#0f172a" strokeWidth="1.1" />
+        </svg>
+      );
 
     default:
       return (

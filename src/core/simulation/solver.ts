@@ -1,6 +1,6 @@
 import { PlacedComponent, WireSegment, JunctionNode } from '../../types/circuit';
 import { COMPONENT_CATALOG } from '../components/catalog';
-import { ElectricalNode, SimulationState } from '../../types/simulation';
+import { ElectricalNode, PneumaticState, SimulationState } from '../../types/simulation';
 
 interface PinInstance {
   componentId: string;
@@ -19,8 +19,8 @@ export class CircuitSolver {
   private activeFaults: Set<string> = new Set();
 
   constructor(
-    components: PlacedComponent[], 
-    wires: WireSegment[], 
+    components: PlacedComponent[],
+    wires: WireSegment[],
     junctions: JunctionNode[],
     activeFaults?: Set<string>
   ) {
@@ -47,8 +47,12 @@ export class CircuitSolver {
 
   public step(
     currentState: SimulationState,
-    deltaTimeMs: number
+    deltaTimeMs: number,
+    plcOutputs?: Record<string, boolean>,
+    onPlcInputsSampled?: (inputs: Record<string, boolean>) => void
   ): SimulationState {
+    const pneuMap = new Map<string, PneumaticState>(currentState.pneumaticStates || []);
+
     const nextState: SimulationState = {
       ...currentState,
       simulationTime: currentState.simulationTime + deltaTimeMs / 1000,
@@ -58,98 +62,177 @@ export class CircuitSolver {
       energizedPins: new Set<string>(),
       timerStates: new Map(currentState.timerStates),
       motorStates: new Map(currentState.motorStates),
-      pilotLights: new Map(currentState.pilotLights)
+      pilotLights: new Map(currentState.pilotLights),
+      pneumaticStates: pneuMap
     };
 
-    // 1. Recopilar todos los pines físicos en el plano
+    // Calcular estados rápidos de sensores neumáticos (a0/a1, b0/b1)
+    const activeReedSensors = this.computeActiveReedSensors(pneuMap);
+
+    // Recopilar todos los pines físicos en el plano
     const pins = this.getAllPins();
 
-    // 2. Resolver ciclo de simulación hasta estabilización (máx 5 iteraciones)
+    // Resolver ciclo de simulación hasta estabilización (máx 5 iteraciones)
     let stateChanged = true;
     let iteration = 0;
+    const sampledInputs: Record<string, boolean> = {};
 
     while (stateChanged && iteration < 5) {
       stateChanged = false;
       iteration++;
 
-      // A. Construir grafos de nodos equipotenciales
-      const nodes = this.buildEquipotentialNodes(pins, nextState);
+      // A. Construir grafos de nodos equipotenciales (incluyendo contactos + salidas relé PLC Q0..Q3)
+      const nodes = this.buildEquipotentialNodes(pins, nextState, plcOutputs, activeReedSensors);
 
       // B. Determinar potenciales de cada nodo a partir de las fuentes
       this.propagatePotentials(nodes);
 
-      // C. Evaluar estado de bobinas
+      // C. Evaluar estado de bobinas, electroválvulas y Quick-Link PLC %Q
       const newActiveCoils = new Set<string>();
+
+      // Registrar banderas de PLC %I/%Q activas para renderizado LED en el bloque S7-1200
+      if (plcOutputs) {
+        for (const [addr, val] of Object.entries(plcOutputs)) {
+          if (val) newActiveCoils.add(`PLC:${addr.toUpperCase()}`);
+        }
+      }
+
       for (const comp of this.components) {
         const def = this.catalogMap.get(comp.type);
         if (!def) continue;
+
+        // Quick-Link directo de salida PLC (%Q0.x) -> activa bobina o electroválvula sin cablear
+        const linkedAddr = comp.plcAddress?.toUpperCase();
+        const isPlcDriven = !!(linkedAddr && plcOutputs && plcOutputs[linkedAddr]);
 
         if (comp.type === 'coil_contactor' || comp.type === 'coil_timer_ton' || comp.type === 'coil_timer_tof') {
           const pinA1 = pins.find(p => p.componentId === comp.id && p.pinId === 'A1');
           const pinA2 = pins.find(p => p.componentId === comp.id && p.pinId === 'A2');
 
-          if (pinA1 && pinA2) {
+          let isEnergized = isPlcDriven;
+          if (!isEnergized && pinA1 && pinA2) {
             const nodeA1 = nodes.find(n => n.pinKeys.includes(`${comp.id}:A1`));
             const nodeA2 = nodes.find(n => n.pinKeys.includes(`${comp.id}:A2`));
-
             const potA1 = nodeA1?.potential;
             const potA2 = nodeA2?.potential;
 
-            // Energizada si un borne tiene fase/+24V y el otro neutro/0V
             const isLiveA1 = potA1 && (potA1.startsWith('L') || potA1 === '+24V');
             const isNeutralA2 = potA2 && (potA2 === 'N' || potA2 === '0V');
             const isLiveA2 = potA2 && (potA2.startsWith('L') || potA2 === '+24V');
             const isNeutralA1 = potA1 && (potA1 === 'N' || potA1 === '0V');
 
-            const isEnergized = (isLiveA1 && isNeutralA2) || (isLiveA2 && isNeutralA1);
+            isEnergized = Boolean((isLiveA1 && isNeutralA2) || (isLiveA2 && isNeutralA1));
+          }
 
-            if (isEnergized) {
-              const isOpenCoil = this.activeFaults.has('open_coil_km1') || this.activeFaults.has('bobina_abierta');
-              if (comp.tag === '-KM1' && isOpenCoil) {
-                // Falla: Bobina de contactor -KM1 abierta/cortada internamente (A1-A2 = O.L)
-                // Hay tensión en bornes pero no genera campo magnético ni atraca la armadura
-              } else {
-                newActiveCoils.add(comp.tag);
-              }
-
-              // Manejo de temporizador
-              if (def.hasTimer) {
-                const targetTime = comp.timerValue ?? def.defaultTimeSeconds ?? 5;
-                const prevTimer = nextState.timerStates.get(comp.id) || {
-                  elapsedTime: 0,
-                  targetTime,
-                  isComplete: false,
-                  isActive: true
-                };
-
-                const newElapsed = prevTimer.elapsedTime + deltaTimeMs / 1000;
-                const isComplete = newElapsed >= targetTime;
-
-                nextState.timerStates.set(comp.id, {
-                  elapsedTime: newElapsed,
-                  targetTime,
-                  isComplete,
-                  isActive: true
-                });
-
-                if (isComplete) {
-                  newActiveCoils.add(`${comp.tag}:TIMED`);
-                }
-              }
+          if (isEnergized) {
+            const isOpenCoil = this.activeFaults.has('open_coil_km1') || this.activeFaults.has('bobina_abierta');
+            if (comp.tag === '-KM1' && isOpenCoil) {
+              // Falla inyectada: bobina abierta
             } else {
-              // Si no está energizada, resetear temporizador TON
-              if (def.hasTimer && comp.type === 'coil_timer_ton') {
-                nextState.timerStates.set(comp.id, {
-                  elapsedTime: 0,
-                  targetTime: comp.timerValue ?? def.defaultTimeSeconds ?? 5,
-                  isComplete: false,
-                  isActive: false
-                });
+              newActiveCoils.add(comp.tag);
+            }
+
+            if (def.hasTimer) {
+              const targetTime = comp.timerValue ?? def.defaultTimeSeconds ?? 5;
+              const prevTimer = nextState.timerStates.get(comp.id) || {
+                elapsedTime: 0,
+                targetTime,
+                isComplete: false,
+                isActive: true
+              };
+
+              const newElapsed = prevTimer.elapsedTime + deltaTimeMs / 1000;
+              const isComplete = newElapsed >= targetTime;
+
+              nextState.timerStates.set(comp.id, {
+                elapsedTime: newElapsed,
+                targetTime,
+                isComplete,
+                isActive: true
+              });
+
+              if (isComplete) {
+                newActiveCoils.add(`${comp.tag}:TIMED`);
               }
             }
+          } else if (def.hasTimer && comp.type === 'coil_timer_ton') {
+            nextState.timerStates.set(comp.id, {
+              elapsedTime: 0,
+              targetTime: comp.timerValue ?? def.defaultTimeSeconds ?? 5,
+              isComplete: false,
+              isActive: false
+            });
+          }
+        }
+
+        // Electroválvula 5/2 biestable (Y1 avance / Y2 retorno)
+        if (comp.type === 'solenoid_valve_5_2') {
+          const nY1a = nodes.find(n => n.pinKeys.includes(`${comp.id}:Y1_A1`));
+          const nY1b = nodes.find(n => n.pinKeys.includes(`${comp.id}:Y1_A2`));
+          const nY2a = nodes.find(n => n.pinKeys.includes(`${comp.id}:Y2_A1`));
+          const nY2b = nodes.find(n => n.pinKeys.includes(`${comp.id}:Y2_A2`));
+
+          const hasSupplyDiff = (p1?: string | null, p2?: string | null) =>
+            Boolean(
+              p1 &&
+                p2 &&
+                (((p1 === '+24V' || p1.startsWith('L')) && (p2 === '0V' || p2 === 'N')) ||
+                  ((p2 === '+24V' || p2.startsWith('L')) && (p1 === '0V' || p1 === 'N')))
+            );
+
+          const y1Energized = hasSupplyDiff(nY1a?.potential, nY1b?.potential) || Boolean(plcOutputs?.['%Q0.2'] && comp.tag === '-A');
+          const y2Energized = hasSupplyDiff(nY2a?.potential, nY2b?.potential) || Boolean(plcOutputs?.['%Q0.3'] && comp.tag === '-A');
+
+          if (y1Energized) {
+            newActiveCoils.add(`${comp.tag}:Y1`);
+            newActiveCoils.add('Y1');
+          }
+          if (y2Energized) {
+            newActiveCoils.add(`${comp.tag}:Y2`);
+            newActiveCoils.add('Y2');
           }
         }
       }
+
+      // Muestrear entradas físicas de bloques S7-1200 y Quick-Links %I0.x
+      Object.keys(sampledInputs).forEach(k => delete sampledInputs[k]);
+      for (const comp of this.components) {
+        if (comp.type === 'plc_cpu_s71200') {
+          const pinMap: Array<[string, string]> = [
+            ['I0', '%I0.0'],
+            ['I1', '%I0.1'],
+            ['I2', '%I0.2'],
+            ['I3', '%I0.3'],
+            ['I4', '%I0.4']
+          ];
+          for (const [pId, addr] of pinMap) {
+            const nodeIn = nodes.find(n => n.pinKeys.includes(`${comp.id}:${pId}`));
+            const pot = nodeIn?.potential;
+            if (pot === '+24V' || (pot && pot.startsWith('L'))) {
+              sampledInputs[addr] = true;
+              newActiveCoils.add(`PLC:${addr}`);
+            }
+          }
+        }
+
+        // Quick-Link de pulsadores/sensores con plcAddress = %I0.x
+        if (comp.plcAddress && comp.plcAddress.toUpperCase().startsWith('%I')) {
+          const addr = comp.plcAddress.toUpperCase();
+          const normTag = comp.tag.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const isReedClosed = activeReedSensors.has(normTag);
+          const isActuated = comp.state?.isActuated === true || isReedClosed;
+          const def = this.catalogMap.get(comp.type);
+          const signalHigh = def?.isNormallyClosed ? !isActuated : isActuated;
+          if (signalHigh) {
+            sampledInputs[addr] = true;
+            newActiveCoils.add(`PLC:${addr}`);
+          }
+        }
+      }
+
+      // También mapear sensores neumáticos a0/a1 a %I0.3/%I0.4 si existen en escena
+      if (activeReedSensors.has('a0')) sampledInputs['%I0.3'] = true;
+      if (activeReedSensors.has('a1')) sampledInputs['%I0.4'] = true;
 
       // Comprobar si cambió el conjunto de bobinas activas
       if (newActiveCoils.size !== nextState.activeCoils.size) {
@@ -167,18 +250,21 @@ export class CircuitSolver {
       // D. Evaluar luces piloto
       for (const comp of this.components) {
         if (comp.type.startsWith('pilot_light_') || comp.type === 'horn_siren') {
+          const linkedAddr = comp.plcAddress?.toUpperCase();
+          const isPlcDriven = !!(linkedAddr && plcOutputs && plcOutputs[linkedAddr]);
           const nodeX1 = nodes.find(n => n.pinKeys.includes(`${comp.id}:X1`));
           const nodeX2 = nodes.find(n => n.pinKeys.includes(`${comp.id}:X2`));
 
           const potX1 = nodeX1?.potential;
           const potX2 = nodeX2?.potential;
 
-          const isLit = (potX1 && potX2) && (
-            (potX1.startsWith('L') && (potX2 === 'N' || potX2 === '0V')) ||
-            (potX2.startsWith('L') && (potX1 === 'N' || potX1 === '0V')) ||
-            (potX1 === '+24V' && potX2 === '0V') ||
-            (potX2 === '+24V' && potX1 === '0V')
-          );
+          const isLit =
+            isPlcDriven ||
+            ((potX1 && potX2) &&
+              ((potX1.startsWith('L') && (potX2 === 'N' || potX2 === '0V')) ||
+                (potX2.startsWith('L') && (potX1 === 'N' || potX1 === '0V')) ||
+                (potX1 === '+24V' && potX2 === '0V') ||
+                (potX2 === '+24V' && potX1 === '0V')));
 
           let color: 'red' | 'green' | 'yellow' | 'blue' | 'white' = 'green';
           if (comp.type === 'pilot_light_red') color = 'red';
@@ -204,7 +290,6 @@ export class CircuitSolver {
           let hasError = false;
 
           if (pU && pV && pW) {
-            // Sentido Horario: L1, L2, L3 (o permutaciones cíclicas directas)
             if (
               (pU === 'L1' && pV === 'L2' && pW === 'L3') ||
               (pU === 'L2' && pV === 'L3' && pW === 'L1') ||
@@ -212,9 +297,7 @@ export class CircuitSolver {
             ) {
               targetRpm = 1450;
               direction = 1;
-            }
-            // Sentido Antihorario: Inversión de dos fases
-            else if (
+            } else if (
               (pU === 'L3' && pV === 'L2' && pW === 'L1') ||
               (pU === 'L1' && pV === 'L3' && pW === 'L2') ||
               (pU === 'L2' && pV === 'L1' && pW === 'L3')
@@ -225,8 +308,6 @@ export class CircuitSolver {
               hasError = true;
             }
           } else if ((pU && pV) || (pU && pW) || (pV && pW)) {
-            // Operación bifásica por falta/corte de fase: asimetría severa,
-            // rotor bloqueado con zumbido y sobrecorriente (>18A)
             targetRpm = 25;
             direction = 1;
           }
@@ -236,9 +317,7 @@ export class CircuitSolver {
             const nodeU2 = nodes.find(n => n.pinKeys.includes(`${comp.id}:U2`));
             const nodeV2 = nodes.find(n => n.pinKeys.includes(`${comp.id}:V2`));
 
-            // Conexión Estrella: W2, U2, V2 puenteados en un mismo nodo común
-            const isStar = !!(nodeW2 && nodeU2 && nodeV2 && (nodeW2.id === nodeU2.id && nodeU2.id === nodeV2.id));
-            // Conexión Triángulo: W2, U2, V2 conectados a las fases
+            const isStar = !!(nodeW2 && nodeU2 && nodeV2 && nodeW2.id === nodeU2.id && nodeU2.id === nodeV2.id);
             const isDelta = !!(nodeW2?.potential && nodeU2?.potential && nodeV2?.potential);
 
             if (!isStar && !isDelta) {
@@ -257,10 +336,12 @@ export class CircuitSolver {
             hasError: false
           };
 
-          // Suavizado inercial de rotación (frenado rápido cuando targetRpm es 0)
-          const currentRpm = targetRpm === 0
-            ? (currentMotor.rpm > 10 ? currentMotor.rpm * 0.4 : 0)
-            : currentMotor.rpm + (targetRpm - currentMotor.rpm) * 0.2;
+          const currentRpm =
+            targetRpm === 0
+              ? currentMotor.rpm > 10
+                ? currentMotor.rpm * 0.4
+                : 0
+              : currentMotor.rpm + (targetRpm - currentMotor.rpm) * 0.2;
           const deltaAngle = (currentRpm / 60) * 360 * (deltaTimeMs / 1000) * direction;
           const newAngle = (currentMotor.angle + deltaAngle) % 360;
 
@@ -274,7 +355,7 @@ export class CircuitSolver {
         }
       }
 
-      // Marcar cables y pines energizados para feedback visual
+      // Marcar cables y pines energizados
       for (const node of nodes) {
         if (node.potential) {
           node.wireIds.forEach(wId => nextState.energizedWires.add(wId));
@@ -283,7 +364,65 @@ export class CircuitSolver {
       }
     }
 
+    // F. Actualizar movimiento físico de cilindros neumáticos según válvulas Y1 / Y2
+    const speedPerSec = 0.75; // Carrera completa en ~1.33s
+    const stepDelta = speedPerSec * (deltaTimeMs / 1000);
+
+    for (const comp of this.components) {
+      if (comp.type !== 'pneumatic_cylinder_da') continue;
+      const prevPneu = pneuMap.get(comp.id) || {
+        position: comp.state?.pistonPos ?? 0,
+        isExtending: false,
+        isRetracting: false,
+        atStart: true,
+        atEnd: false
+      };
+
+      const y1Active =
+        nextState.activeCoils.has(`${comp.tag}:Y1`) ||
+        nextState.activeCoils.has('Y1') ||
+        Boolean(plcOutputs?.['%Q0.2'] && (comp.tag === '-A' || comp.tag === 'A'));
+      const y2Active =
+        nextState.activeCoils.has(`${comp.tag}:Y2`) ||
+        nextState.activeCoils.has('Y2') ||
+        Boolean(plcOutputs?.['%Q0.3'] && (comp.tag === '-A' || comp.tag === 'A'));
+
+      let pos = prevPneu.position;
+      let isExtending = false;
+      let isRetracting = false;
+
+      if (y1Active && !y2Active) {
+        pos = Math.min(1, pos + stepDelta);
+        isExtending = pos < 1;
+      } else if (y2Active && !y1Active) {
+        pos = Math.max(0, pos - stepDelta);
+        isRetracting = pos > 0;
+      }
+
+      pneuMap.set(comp.id, {
+        position: pos,
+        isExtending,
+        isRetracting,
+        atStart: pos <= 0.04,
+        atEnd: pos >= 0.96
+      });
+    }
+
+    onPlcInputsSampled?.(sampledInputs);
     return nextState;
+  }
+
+  private computeActiveReedSensors(pneuMap: Map<string, PneumaticState>): Set<string> {
+    const active = new Set<string>();
+    for (const comp of this.components) {
+      if (comp.type !== 'pneumatic_cylinder_da') continue;
+      const st = pneuMap.get(comp.id);
+      const pos = st ? st.position : (comp.state?.pistonPos ?? 0);
+      const prefix = (comp.tag || '-A').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'a';
+      if (pos <= 0.04) active.add(`${prefix}0`);
+      if (pos >= 0.96) active.add(`${prefix}1`);
+    }
+    return active;
   }
 
   private getAllPins(): PinInstance[] {
@@ -293,7 +432,6 @@ export class CircuitSolver {
       if (!def) continue;
 
       for (const p of def.pins) {
-        // Calcular coordenada absoluta en función de la posición y rotación
         let px = p.relX;
         let py = p.relY;
 
@@ -323,8 +461,12 @@ export class CircuitSolver {
     return pins;
   }
 
-  private buildEquipotentialNodes(pins: PinInstance[], state: SimulationState): ElectricalNode[] {
-    // Estructura Union-Find para agrupar puntos interconectados
+  private buildEquipotentialNodes(
+    pins: PinInstance[],
+    state: SimulationState,
+    plcOutputs?: Record<string, boolean>,
+    activeReedSensors?: Set<string>
+  ): ElectricalNode[] {
     const parent = new Map<string, string>();
     const find = (i: string): string => {
       if (!parent.has(i)) parent.set(i, i);
@@ -339,55 +481,55 @@ export class CircuitSolver {
       if (rootI !== rootJ) parent.set(rootI, rootJ);
     };
 
-    // Clave de posición "X,Y"
     const coordKey = (x: number, y: number) => `${x},${y}`;
 
-    // A. Conectar extremos de cables que coinciden en coordenadas
-    const wireMap = new Map<string, WireSegment>();
     const isL1Cut = this.activeFaults.has('phase_loss_l1') || this.activeFaults.has('corte_fase_l1');
     const isL2Cut = this.activeFaults.has('phase_loss_l2') || this.activeFaults.has('corte_fase_l2') || this.activeFaults.has('fase_cortada');
     const isL3Cut = this.activeFaults.has('phase_loss_l3') || this.activeFaults.has('corte_fase_l3');
 
     for (const wire of this.wires) {
-      // Simular corte de conductor en fase L1
-      if (isL1Cut) {
-        if (wire.id === 'w_p1' || wire.id === 'w_p4' || wire.id === 'w_p7' || wire.id === 'w_p10' || wire.id === 'w_conv_p4' || (wire.wireType === 'phase1' && (wire.fromY >= 6 || wire.toY >= 6))) {
-          continue; // Cable interrumpido
-        }
+      if (isL1Cut && (wire.id === 'w_p1' || wire.id === 'w_p4' || wire.id === 'w_p7' || wire.id === 'w_p10' || wire.id === 'w_conv_p4' || (wire.wireType === 'phase1' && (wire.fromY >= 6 || wire.toY >= 6)))) {
+        continue;
       }
-      // Simular corte de conductor en fase L2 (asimetría de tensiones y sobreintensidad)
-      if (isL2Cut) {
-        if (wire.id === 'w_p2' || wire.id === 'w_p5' || wire.id === 'w_p8' || wire.id === 'w_p11' || wire.id === 'w_conv_p5' || (wire.wireType === 'phase2' && (wire.fromY >= 6 || wire.toY >= 6))) {
-          continue; // Cable interrumpido
-        }
+      if (isL2Cut && (wire.id === 'w_p2' || wire.id === 'w_p5' || wire.id === 'w_p8' || wire.id === 'w_p11' || wire.id === 'w_conv_p5' || (wire.wireType === 'phase2' && (wire.fromY >= 6 || wire.toY >= 6)))) {
+        continue;
       }
-      // Simular corte de conductor en fase L3
-      if (isL3Cut) {
-        if (wire.id === 'w_p3' || wire.id === 'w_p6' || wire.id === 'w_p9' || wire.id === 'w_p12' || wire.id === 'w_conv_p6' || (wire.wireType === 'phase3' && (wire.fromY >= 6 || wire.toY >= 6))) {
-          continue; // Cable interrumpido
-        }
+      if (isL3Cut && (wire.id === 'w_p3' || wire.id === 'w_p6' || wire.id === 'w_p9' || wire.id === 'w_p12' || wire.id === 'w_conv_p6' || (wire.wireType === 'phase3' && (wire.fromY >= 6 || wire.toY >= 6)))) {
+        continue;
       }
 
-      wireMap.set(wire.id, wire);
-      const kFrom = coordKey(wire.fromX, wire.fromY);
-      const kTo = coordKey(wire.toX, wire.toY);
-      union(kFrom, kTo);
+      union(coordKey(wire.fromX, wire.fromY), coordKey(wire.toX, wire.toY));
     }
 
-    // B. Conectar pines que coincidan con coordenadas de cables
     for (const pin of pins) {
-      const kPin = coordKey(pin.x, pin.y);
-      find(kPin); // Registrar en Union-Find
+      find(coordKey(pin.x, pin.y));
     }
 
-    // C. Conectar pines internos de componentes según su estado de conducción
     for (const comp of this.components) {
       const def = this.catalogMap.get(comp.type);
       if (!def) continue;
 
       const getPin = (pId: string) => pins.find(p => p.componentId === comp.id && p.pinId === pId);
 
-      // Contactores principales 3P
+      // Puente interno de salidas a relé PLC S7-1200: 1L -> Q0..Q3 según %Q0.0..%Q0.3
+      if (comp.type === 'plc_cpu_s71200' && plcOutputs) {
+        const p1L = getPin('1L');
+        if (p1L) {
+          const qMap: Array<[string, string]> = [
+            ['Q0', '%Q0.0'],
+            ['Q1', '%Q0.1'],
+            ['Q2', '%Q0.2'],
+            ['Q3', '%Q0.3']
+          ];
+          for (const [qPinId, addr] of qMap) {
+            if (plcOutputs[addr]) {
+              const pOut = getPin(qPinId);
+              if (pOut) union(coordKey(p1L.x, p1L.y), coordKey(pOut.x, pOut.y));
+            }
+          }
+        }
+      }
+
       if (comp.type === 'contactor_power_3p') {
         const isWelded = this.activeFaults.has('welded_contact_km1') || this.activeFaults.has('contacto_soldado') || this.activeFaults.has('welded_contact');
         const isClosed = state.activeCoils.has(comp.tag) || (comp.tag === '-KM1' && isWelded);
@@ -401,7 +543,6 @@ export class CircuitSolver {
         }
       }
 
-      // Disyuntor Guardamotor 3P
       if (comp.type === 'breaker_3p' || comp.type === 'thermal_relay_power') {
         const isClosed = comp.state?.isOpen !== true;
         if (isClosed) {
@@ -414,7 +555,6 @@ export class CircuitSolver {
         }
       }
 
-      // Disyuntor 1P+N
       if (comp.type === 'breaker_1p_n') {
         const isClosed = comp.state?.isOpen !== true;
         if (isClosed) {
@@ -425,12 +565,11 @@ export class CircuitSolver {
         }
       }
 
-      // Contactos auxiliares NA (13-14) o contacto térmico NA (97-98)
       if (comp.type === 'contact_no' || comp.type === 'thermal_contact_no') {
         const isWelded = this.activeFaults.has('welded_contact_km1') || this.activeFaults.has('contacto_soldado') || this.activeFaults.has('welded_contact');
-        const isClosed = comp.type === 'contact_no' 
-          ? (state.activeCoils.has(comp.tag) || (comp.tag === '-KM1' && isWelded))
-          : this.activeFaults.has('thermal_overload'); // contacto térmico 97-98 cierra en fallo
+        const isClosed = comp.type === 'contact_no'
+          ? state.activeCoils.has(comp.tag) || (comp.tag === '-KM1' && isWelded)
+          : this.activeFaults.has('thermal_overload');
         if (isClosed) {
           const p13 = getPin(def.pins[0].id);
           const p14 = getPin(def.pins[1].id);
@@ -438,17 +577,11 @@ export class CircuitSolver {
         }
       }
 
-      // Contactos auxiliares NC (21-22 o térmico 95-96)
       if (comp.type === 'contact_nc' || comp.type === 'thermal_contact_nc') {
-        const isCoilActive = state.activeCoils.has(comp.tag);
-        // Abierto cuando la bobina está activa, cerrado en reposo
-        let isClosed = !isCoilActive;
-
-        // Falla: Apertura forzada del contacto 95-96 del relé térmico -F1
+        let isClosed = !state.activeCoils.has(comp.tag);
         if (comp.type === 'thermal_contact_nc' && this.activeFaults.has('thermal_overload')) {
           isClosed = false;
         }
-
         if (isClosed) {
           const p1 = getPin(def.pins[0].id);
           const p2 = getPin(def.pins[1].id);
@@ -456,38 +589,35 @@ export class CircuitSolver {
         }
       }
 
-      // Contactos temporizados TON NA / NC
       if (comp.type === 'contact_timer_ton_no') {
-        const isClosed = state.activeCoils.has(`${comp.tag}:TIMED`);
-        if (isClosed) {
+        if (state.activeCoils.has(`${comp.tag}:TIMED`)) {
           const p1 = getPin('67'); const p2 = getPin('68');
           if (p1 && p2) union(coordKey(p1.x, p1.y), coordKey(p2.x, p2.y));
         }
       }
+
       if (comp.type === 'contact_timer_ton_nc') {
-        const isClosed = !state.activeCoils.has(`${comp.tag}:TIMED`);
-        if (isClosed) {
+        if (!state.activeCoils.has(`${comp.tag}:TIMED`)) {
           const p1 = getPin('55'); const p2 = getPin('56');
           if (p1 && p2) union(coordKey(p1.x, p1.y), coordKey(p2.x, p2.y));
         }
       }
 
-      // Pulsador de Marcha NA (3-4)
       if (comp.type === 'button_no' || comp.type === 'limit_switch_no') {
-        const isPressed = comp.state?.isActuated === true;
-        if (isPressed) {
+        const normTag = comp.tag.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const isReedClosed = activeReedSensors?.has(normTag) ?? false;
+        if (comp.state?.isActuated === true || isReedClosed) {
           const p3 = getPin(def.pins[0].id);
           const p4 = getPin(def.pins[1].id);
           if (p3 && p4) union(coordKey(p3.x, p3.y), coordKey(p4.x, p4.y));
         }
       }
 
-      // Pulsador de Parada NC (1-2) o Seta de emergencia
       if (comp.type === 'button_nc' || comp.type === 'emergency_stop' || comp.type === 'limit_switch_nc') {
-        const isPressed = comp.state?.isActuated === true;
-        // Cerrado en reposo, abierto al pulsar
-        const isClosed = !isPressed;
-        if (isClosed) {
+        const normTag = comp.tag.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const isReedPressed = activeReedSensors?.has(normTag) ?? false;
+        const isPressed = comp.state?.isActuated === true || isReedPressed;
+        if (!isPressed) {
           const p1 = getPin(def.pins[0].id);
           const p2 = getPin(def.pins[1].id);
           if (p1 && p2) union(coordKey(p1.x, p1.y), coordKey(p2.x, p2.y));
@@ -495,10 +625,8 @@ export class CircuitSolver {
       }
     }
 
-    // D. Agrupar elementos por cada raíz en Union-Find
     const nodeGroups = new Map<string, ElectricalNode>();
 
-    // Asignar pines
     for (const pin of pins) {
       const root = find(coordKey(pin.x, pin.y));
       if (!nodeGroups.has(root)) {
@@ -517,7 +645,6 @@ export class CircuitSolver {
       }
     }
 
-    // Asignar cables
     for (const wire of this.wires) {
       const root = find(coordKey(wire.fromX, wire.fromY));
       if (!nodeGroups.has(root)) {
@@ -536,7 +663,6 @@ export class CircuitSolver {
   }
 
   private propagatePotentials(nodes: ElectricalNode[]) {
-    // Si un nodo tiene una fuente de alimentación, asignar su tensión característica
     for (const node of nodes) {
       if (node.potential) {
         if (node.potential === 'L1' || node.potential === 'L2' || node.potential === 'L3') {

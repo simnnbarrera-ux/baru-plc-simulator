@@ -58,6 +58,7 @@ export interface PlacedComponent {
   mirrored?: boolean;
   value?: string;           // Parámetros adicionales (ej: tiempo "5s", potencia "2.2kW")
   timerValue?: number;      // Tiempo en segundos para temporizadores
+  plcAddress?: string;      // Dirección TIA Portal vinculada (ej: "%I0.0", "%Q0.0")
   state?: {
     isOpen?: boolean;       // Estado del contacto (abierto o cerrado)
     isEnergized?: boolean;  // Si la bobina o componente tiene tensión
@@ -66,6 +67,8 @@ export interface PlacedComponent {
     motorRpm?: number;      // RPM actuales del motor
     motorRotation?: number; // Sentido: 1 (horario), -1 (antihorario), 0 (detenido)
     angle?: number;         // Ángulo de animación del rotor en grados (0..360)
+    pistonPos?: number;     // 0.0 (retraído a0) a 1.0 (extendido a1) para cilindros neumáticos
+    valvePos?: 'A' | 'B' | 'center'; // Posición de corredera de electroválvula 5/2
   };
 }
 

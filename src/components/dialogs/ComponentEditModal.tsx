@@ -20,6 +20,7 @@ export const ComponentEditModal: React.FC<Props> = ({
 
   const def = COMPONENT_CATALOG.find(c => c.type === component.type);
   const [tag, setTag] = useState<string>(component.tag);
+  const [plcAddress, setPlcAddress] = useState<string>(component.plcAddress ?? '');
   const [timerValue, setTimerValue] = useState<number>(component.timerValue ?? def?.defaultTimeSeconds ?? 5);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -27,6 +28,7 @@ export const ComponentEditModal: React.FC<Props> = ({
     onSave({
       ...component,
       tag: tag.trim().toUpperCase(),
+      plcAddress: plcAddress.trim() ? plcAddress.trim().toUpperCase() : undefined,
       timerValue
     });
     onClose();
@@ -64,6 +66,19 @@ export const ComponentEditModal: React.FC<Props> = ({
             <p className="text-[11px] text-industrial-500 mt-1">
               Las bobinas y contactos con el mismo Tag se accionarán de manera conjunta.
             </p>
+          </div>
+
+          <div>
+            <label className="block font-semibold mb-1 text-industrial-300">
+              Dirección PLC TIA Portal (Opcional):
+            </label>
+            <input
+              type="text"
+              value={plcAddress}
+              onChange={e => setPlcAddress(e.target.value)}
+              className="w-full px-3 py-2 bg-industrial-950 border border-industrial-700 rounded font-mono text-emerald-400 focus:outline-none focus:border-emerald-400"
+              placeholder="%I0.0, %Q0.0..."
+            />
           </div>
 
           {def?.hasTimer && (

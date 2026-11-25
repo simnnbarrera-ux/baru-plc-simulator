@@ -1030,7 +1030,7 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       </div>
 
       {/* Tarjeta flotante con guía rápida de navegación */}
-      <div className="absolute bottom-5 left-5 z-40 hidden sm:flex items-center gap-3 px-3 py-1.5 bg-white/90 backdrop-blur-sm rounded-lg border border-slate-300 text-[11px] text-slate-600 shadow-sm pointer-events-none">
+      <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 hidden lg:flex items-center gap-3 px-3 py-1.5 bg-white/85 backdrop-blur-sm rounded-lg border border-slate-200 text-[11px] text-slate-600 shadow-sm pointer-events-none">
         <span><kbd className="px-1 py-0.5 bg-slate-100 border rounded font-mono font-bold text-slate-800">Clic Derecho</kbd> o <kbd className="px-1 py-0.5 bg-slate-100 border rounded font-mono font-bold text-slate-800">Espacio</kbd> + Arrastrar para mover</span>
         <span>•</span>
         <span><kbd className="px-1 py-0.5 bg-slate-100 border rounded font-mono font-bold text-slate-800">Rueda</kbd> para Zoom</span>

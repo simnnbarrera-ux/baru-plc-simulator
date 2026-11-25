@@ -1,4 +1,5 @@
 import { CircuitDocument } from '../../types/circuit';
+import { TiaProgramDocument, DEFAULT_TIA_PROGRAM } from '../plc/tiaEngine';
 
 // ============================================================================
 // 1. ARRANQUE DIRECTO DE MOTOR TRIFÁSICO (BASE INTERACTIVA)
@@ -1445,4 +1446,234 @@ export const WATER_TANK_PUMP_CIRCUIT: CircuitDocument = {
     { id: 'j_pmp_n4', x: 34, y: 33 },
     { id: 'j_pmp_n5', x: 39, y: 33 }
   ]
+};
+
+// ============================================================================
+// 6. ARRANQUE MOTOR CON PLC SIEMENS S7-1200 (CO-SIMULACIÓN CAD + TIA PORTAL)
+// ============================================================================
+export const PLC_S71200_STARTER_CIRCUIT: CircuitDocument = {
+  version: '2.0.0',
+  gridSize: 20,
+  titleBlock: {
+    title: 'Control Motor con PLC Siemens S7-1200',
+    project: 'Co-Simulación CADe_SIMU + TIA Portal',
+    author: 'Simón Barrera Ruíz',
+    date: '2026-11-12',
+    sheet: '1/1',
+    scale: '1:1',
+    revision: '1.0',
+    company: 'Sistemas de Automatización'
+  },
+  components: [
+    // Fuerza Trifásica
+    { id: 'plc_pow3', type: 'power_3phase_pe', tag: '3L+PE', x: 4, y: 2, rotation: 0 },
+    { id: 'plc_q1', type: 'breaker_3p', tag: '-Q1', x: 4, y: 6, rotation: 0, state: { isOpen: false } },
+    { id: 'plc_km1', type: 'contactor_power_3p', tag: '-KM1', x: 4, y: 12, rotation: 0 },
+    { id: 'plc_f1', type: 'thermal_relay_power', tag: '-F1', x: 4, y: 18, rotation: 0, state: { isOpen: false } },
+    { id: 'plc_m1', type: 'motor_3phase', tag: '-M1', x: 4, y: 24, rotation: 0 },
+
+    // Alimentación 24V DC y Entradas
+    { id: 'plc_dc', type: 'power_dc', tag: '24VDC', x: 16, y: 2, rotation: 0 },
+    { id: 'btn_start', type: 'button_no', tag: '-S1', plcAddress: '%I0.0', x: 19, y: 6, rotation: 0, state: { isActuated: false } },
+    { id: 'btn_stop', type: 'button_no', tag: '-S0', plcAddress: '%I0.1', x: 22, y: 6, rotation: 0, state: { isActuated: false } },
+
+    // CPU Siemens S7-1200 1214C
+    { id: 'cpu_s7', type: 'plc_cpu_s71200', tag: 'PLC1', x: 17, y: 11, rotation: 0 },
+
+    // Actuadores cableados a salidas Q0.0 / Q0.1
+    { id: 'coil_km1', type: 'coil_contactor', tag: '-KM1', plcAddress: '%Q0.0', x: 19, y: 19, rotation: 0 },
+    { id: 'pilot_run', type: 'pilot_light_green', tag: '-H1', plcAddress: '%Q0.1', x: 22, y: 19, rotation: 0 }
+  ],
+  wires: [
+    // Fuerza Trifásica
+    { id: 'wp_1', fromX: 5, fromY: 4, toX: 5, toY: 6, wireType: 'phase1' },
+    { id: 'wp_2', fromX: 6, fromY: 4, toX: 6, toY: 6, wireType: 'phase2' },
+    { id: 'wp_3', fromX: 7, fromY: 4, toX: 7, toY: 6, wireType: 'phase3' },
+    { id: 'wp_4', fromX: 5, fromY: 10, toX: 5, toY: 12, wireType: 'phase1' },
+    { id: 'wp_5', fromX: 6, fromY: 10, toX: 6, toY: 12, wireType: 'phase2' },
+    { id: 'wp_6', fromX: 7, fromY: 10, toX: 7, toY: 12, wireType: 'phase3' },
+    { id: 'wp_7', fromX: 5, fromY: 16, toX: 5, toY: 18, wireType: 'phase1' },
+    { id: 'wp_8', fromX: 6, fromY: 16, toX: 6, toY: 18, wireType: 'phase2' },
+    { id: 'wp_9', fromX: 7, fromY: 16, toX: 7, toY: 18, wireType: 'phase3' },
+    { id: 'wp_10', fromX: 5, fromY: 22, toX: 5, toY: 24, wireType: 'phase1' },
+    { id: 'wp_11', fromX: 6, fromY: 22, toX: 6, toY: 24, wireType: 'phase2' },
+    { id: 'wp_12', fromX: 7, fromY: 22, toX: 7, toY: 24, wireType: 'phase3' },
+    { id: 'wp_pe', fromX: 8, fromY: 4, toX: 8, toY: 26, wireType: 'pe' },
+
+    // Bus +24V DC (Rojo)
+    { id: 'wdc_1', fromX: 17, fromY: 4, toX: 17, toY: 17, wireType: 'dc_pos' },
+    { id: 'wdc_2', fromX: 17, fromY: 5, toX: 23, toY: 5, wireType: 'dc_pos' },
+    { id: 'wdc_3', fromX: 20, fromY: 5, toX: 20, toY: 6, wireType: 'dc_pos' },
+    { id: 'wdc_4', fromX: 23, fromY: 5, toX: 23, toY: 6, wireType: 'dc_pos' },
+    { id: 'wdc_5', fromX: 17, fromY: 11, toX: 18, toY: 11, wireType: 'dc_pos' },
+    { id: 'wdc_6', fromX: 17, fromY: 17, toX: 18, toY: 17, wireType: 'dc_pos' },
+
+    // Entradas I0.0 y I0.1 al PLC
+    { id: 'wi_0', fromX: 20, fromY: 9, toX: 20, toY: 11, wireType: 'control' },
+    { id: 'wi_1', fromX: 23, fromY: 9, toX: 23, toY: 10, wireType: 'control' },
+    { id: 'wi_2', fromX: 23, fromY: 10, toX: 21, toY: 10, wireType: 'control' },
+    { id: 'wi_3', fromX: 21, fromY: 10, toX: 21, toY: 11, wireType: 'control' },
+
+    // Salidas Q0.0 (-KM1) y Q0.1 (-H1)
+    { id: 'wq_0', fromX: 20, fromY: 17, toX: 20, toY: 19, wireType: 'control' },
+    { id: 'wq_1', fromX: 21, fromY: 17, toX: 21, toY: 18, wireType: 'control' },
+    { id: 'wq_2', fromX: 21, fromY: 18, toX: 23, toY: 18, wireType: 'control' },
+    { id: 'wq_3', fromX: 23, fromY: 18, toX: 23, toY: 19, wireType: 'control' },
+
+    // Retorno 0V DC (Negativo)
+    { id: 'wn_1', fromX: 18, fromY: 4, toX: 16, toY: 4, wireType: 'dc_neg' },
+    { id: 'wn_2', fromX: 16, fromY: 4, toX: 16, toY: 25, wireType: 'dc_neg' },
+    { id: 'wn_3', fromX: 16, fromY: 25, toX: 23, toY: 25, wireType: 'dc_neg' },
+    { id: 'wn_4', fromX: 20, fromY: 22, toX: 20, toY: 25, wireType: 'dc_neg' },
+    { id: 'wn_5', fromX: 23, fromY: 22, toX: 23, toY: 25, wireType: 'dc_neg' }
+  ],
+  junctions: [
+    { id: 'jp_1', x: 17, y: 5 },
+    { id: 'jp_2', x: 20, y: 5 },
+    { id: 'jp_3', x: 17, y: 11 },
+    { id: 'jp_4', x: 20, y: 25 }
+  ]
+};
+
+// ============================================================================
+// 7. ELECTRONEUMÁTICA A+ / A- CON PLC S7-1200 (TIA PORTAL + NEUMÁTICA)
+// ============================================================================
+export const PNEUMATIC_PLC_CIRCUIT: CircuitDocument = {
+  version: '2.0.0',
+  gridSize: 20,
+  titleBlock: {
+    title: 'Ciclo Neumático A+ A- con S7-1200',
+    project: 'Electroneumática Industrial TIA Portal',
+    author: 'Simón Barrera Ruíz',
+    date: '2026-11-12',
+    sheet: '1/1',
+    scale: '1:1',
+    revision: '1.0',
+    company: 'Sistemas de Automatización'
+  },
+  components: [
+    { id: 'pn_dc', type: 'power_dc', tag: '24VDC', x: 6, y: 2, rotation: 0 },
+    { id: 'btn_start', type: 'button_no', tag: '-S1', plcAddress: '%I0.0', x: 9, y: 5, rotation: 0, state: { isActuated: false } },
+    { id: 'btn_stop', type: 'button_no', tag: '-S0', plcAddress: '%I0.1', x: 12, y: 5, rotation: 0, state: { isActuated: false } },
+    { id: 'pn_a0', type: 'limit_switch_no', tag: 'a0', plcAddress: '%I0.3', x: 15, y: 5, rotation: 0, state: { isActuated: false } },
+    { id: 'pn_a1', type: 'limit_switch_no', tag: 'a1', plcAddress: '%I0.4', x: 18, y: 5, rotation: 0, state: { isActuated: false } },
+
+    { id: 'pn_cpu', type: 'plc_cpu_s71200', tag: 'PLC1', x: 8, y: 10, rotation: 0 },
+
+    { id: 'pn_valve', type: 'solenoid_valve_5_2', tag: '-A', x: 10, y: 18, rotation: 0 },
+    { id: 'pn_cyl', type: 'pneumatic_cylinder_da', tag: '-A', x: 22, y: 12, rotation: 0, state: { pistonPos: 0 } },
+    { id: 'pilot_run', type: 'pilot_light_green', tag: '-H1', plcAddress: '%Q0.1', x: 19, y: 18, rotation: 0 }
+  ],
+  wires: [
+    // +24V a entradas y 1L del PLC
+    { id: 'pn_w1', fromX: 7, fromY: 4, toX: 7, toY: 16, wireType: 'dc_pos' },
+    { id: 'pn_w2', fromX: 7, fromY: 16, toX: 9, toY: 16, wireType: 'dc_pos' },
+    { id: 'pn_w3', fromX: 7, fromY: 4, toX: 19, toY: 4, wireType: 'dc_pos' },
+    { id: 'pn_w4', fromX: 10, fromY: 4, toX: 10, toY: 5, wireType: 'dc_pos' },
+    { id: 'pn_w5', fromX: 13, fromY: 4, toX: 13, toY: 5, wireType: 'dc_pos' },
+    { id: 'pn_w6', fromX: 16, fromY: 4, toX: 16, toY: 5, wireType: 'dc_pos' },
+    { id: 'pn_w7', fromX: 19, fromY: 4, toX: 19, toY: 5, wireType: 'dc_pos' },
+
+    // Conexión de pulsadores y sensores a I0..I4
+    { id: 'pn_i0', fromX: 10, fromY: 8, toX: 10, toY: 9, wireType: 'control' },
+    { id: 'pn_i0b', fromX: 10, fromY: 9, toX: 11, toY: 9, wireType: 'control' },
+    { id: 'pn_i0c', fromX: 11, fromY: 9, toX: 11, toY: 10, wireType: 'control' },
+    { id: 'pn_i1', fromX: 13, fromY: 8, toX: 13, toY: 9, wireType: 'control' },
+    { id: 'pn_i1b', fromX: 13, fromY: 9, toX: 12, toY: 9, wireType: 'control' },
+    { id: 'pn_i1c', fromX: 12, fromY: 9, toX: 12, toY: 10, wireType: 'control' },
+    { id: 'pn_i3', fromX: 16, fromY: 8, toX: 16, toY: 9, wireType: 'control' },
+    { id: 'pn_i3b', fromX: 16, fromY: 9, toX: 14, toY: 9, wireType: 'control' },
+    { id: 'pn_i3c', fromX: 14, fromY: 9, toX: 14, toY: 10, wireType: 'control' },
+    { id: 'pn_i4', fromX: 19, fromY: 8, toX: 19, toY: 9, wireType: 'control' },
+    { id: 'pn_i4b', fromX: 19, fromY: 9, toX: 15, toY: 9, wireType: 'control' },
+    { id: 'pn_i4c', fromX: 15, fromY: 9, toX: 15, toY: 10, wireType: 'control' },
+
+    // Salidas Q2 (Y1) y Q3 (Y2) a la electroválvula 5/2
+    { id: 'pn_q2', fromX: 13, fromY: 16, toX: 13, toY: 17, wireType: 'control' },
+    { id: 'pn_q2b', fromX: 13, fromY: 17, toX: 11, toY: 17, wireType: 'control' },
+    { id: 'pn_q2c', fromX: 11, fromY: 17, toX: 11, toY: 18, wireType: 'control' },
+    { id: 'pn_q3', fromX: 14, fromY: 16, toX: 14, toY: 17, wireType: 'control' },
+    { id: 'pn_q3b', fromX: 14, fromY: 17, toX: 15, toY: 17, wireType: 'control' },
+    { id: 'pn_q3c', fromX: 15, fromY: 17, toX: 15, toY: 18, wireType: 'control' },
+
+    // Retorno 0V
+    { id: 'pn_n1', fromX: 8, fromY: 4, toX: 6, toY: 4, wireType: 'dc_neg' },
+    { id: 'pn_n2', fromX: 6, fromY: 4, toX: 6, toY: 22, wireType: 'dc_neg' },
+    { id: 'pn_n3', fromX: 6, fromY: 22, toX: 20, toY: 22, wireType: 'dc_neg' },
+    { id: 'pn_n4', fromX: 11, fromY: 21, toX: 11, toY: 22, wireType: 'dc_neg' },
+    { id: 'pn_n5', fromX: 15, fromY: 21, toX: 15, toY: 22, wireType: 'dc_neg' },
+    { id: 'pn_n6', fromX: 20, fromY: 21, toX: 20, toY: 22, wireType: 'dc_neg' }
+  ],
+  junctions: [
+    { id: 'pn_j1', x: 7, y: 4 },
+    { id: 'pn_j2', x: 10, y: 4 },
+    { id: 'pn_j3', x: 13, y: 4 },
+    { id: 'pn_j4', x: 16, y: 4 },
+    { id: 'pn_j5', x: 11, y: 22 },
+    { id: 'pn_j6', x: 15, y: 22 }
+  ]
+};
+
+export const PNEUMATIC_TIA_PROGRAM: TiaProgramDocument = {
+  ...DEFAULT_TIA_PROGRAM,
+  blockName: 'Ciclo_Neumatico_OB1',
+  activeLanguage: 'LAD',
+  rungs: [
+    {
+      id: 'pn_r1',
+      number: 1,
+      comment: 'Arranque de Ciclo Automático (%M0.0)',
+      branches: [
+        { id: 'pn_b1', contacts: [{ id: 'pnc_1', type: 'NO', address: '%I0.0' }] },
+        { id: 'pn_b2', contacts: [{ id: 'pnc_2', type: 'NO', address: '%M0.0' }] }
+      ],
+      seriesContacts: [{ id: 'pnc_3', type: 'NC', address: '%I0.1' }],
+      coils: [
+        { id: 'pnq_0', type: 'OUT', address: '%M0.0' },
+        { id: 'pnq_1', type: 'OUT', address: '%Q0.1' }
+      ]
+    },
+    {
+      id: 'pn_r2',
+      number: 2,
+      comment: 'Avance Cilindro A+ (Y1) cuando Ciclo y sensor a0 activos',
+      branches: [{ id: 'pn_b3', contacts: [{ id: 'pnc_4', type: 'NO', address: '%M0.0' }] }],
+      seriesContacts: [
+        { id: 'pnc_5', type: 'NO', address: '%I0.3' },
+        { id: 'pnc_6', type: 'NC', address: '%I0.4' }
+      ],
+      coils: [
+        { id: 'pnq_2', type: 'SET', address: '%Q0.2' },
+        { id: 'pnq_3', type: 'RESET', address: '%Q0.3' }
+      ]
+    },
+    {
+      id: 'pn_r3',
+      number: 3,
+      comment: 'Retorno Cilindro A- (Y2) al detectar final de carrera a1',
+      branches: [{ id: 'pn_b4', contacts: [{ id: 'pnc_7', type: 'NO', address: '%I0.4' }] }],
+      seriesContacts: [],
+      coils: [
+        { id: 'pnq_4', type: 'RESET', address: '%Q0.2' },
+        { id: 'pnq_5', type: 'SET', address: '%Q0.3' }
+      ]
+    }
+  ],
+  sclCode: `// Secuencia Electroneumática Automática A+ / A- en SCL
+IF ("Boton_Marcha" OR "Ciclo_Activo") AND NOT "Boton_Paro" THEN
+    "Ciclo_Activo" := TRUE;
+    "Piloto_Marcha" := TRUE;
+ELSE
+    "Ciclo_Activo" := FALSE;
+    "Piloto_Marcha" := FALSE;
+END_IF;
+
+IF "Ciclo_Activo" AND "Sensor_a0" AND NOT "Sensor_a1" THEN
+    "Electrovalvula_A_Mas" := TRUE;
+    "Electrovalvula_A_Menos" := FALSE;
+ELSIF "Sensor_a1" THEN
+    "Electrovalvula_A_Mas" := FALSE;
+    "Electrovalvula_A_Menos" := TRUE;
+END_IF;
+`
 };

@@ -719,18 +719,48 @@ export const COMPONENT_CATALOG: ComponentDefinition[] = [
       { id: 'IN', label: '1', relX: 0, relY: 1, type: 'passive' },
       { id: 'OUT', label: '2', relX: 2, relY: 1, type: 'passive' }
     ]
+  },
+
+  // ==========================================
+  // NEUMÁTICA Y ELECTROVÁLVULAS (ACTUATORS)
+  // ==========================================
+  {
+    type: 'pneumatic_cylinder_da',
+    name: 'Cilindro Doble Efecto (A+ / A-)',
+    category: 'actuators',
+    width: 8,
+    height: 3,
+    defaultTag: '-A',
+    description: 'Actuador lineal neumático doble efecto con sensores magnéticos a0 y a1 (vástago animado)',
+    pins: []
+  },
+  {
+    type: 'solenoid_valve_5_2',
+    name: 'Electroválvula 5/2 Biestable (Y1 / Y2)',
+    category: 'actuators',
+    width: 6,
+    height: 3,
+    defaultTag: '-A',
+    description: 'Válvula direccional 5/2 con doble bobina solenoide Y1 (avance) e Y2 (retorno)',
+    pins: [
+      { id: 'Y1_A1', label: 'Y1+', relX: 1, relY: 0, type: 'coil' },
+      { id: 'Y1_A2', label: 'Y1-', relX: 1, relY: 3, type: 'coil' },
+      { id: 'Y2_A1', label: 'Y2+', relX: 5, relY: 0, type: 'coil' },
+      { id: 'Y2_A2', label: 'Y2-', relX: 5, relY: 3, type: 'coil' }
+    ]
   }
 ];
 
 export const CATEGORY_METADATA = [
   { id: 'power', label: 'Alimentaciones', icon: 'Zap' },
-  { id: 'protection', label: 'Fusibles / Automáticos', icon: 'ShieldAlert' },
+  { id: 'protection', label: 'Protecciones', icon: 'ShieldAlert' },
   { id: 'contactors', label: 'Contactores', icon: 'GitMerge' },
   { id: 'motors', label: 'Motores', icon: 'Cog' },
   { id: 'control', label: 'Pulsadores', icon: 'HandMetal' },
-  { id: 'relays', label: 'Bobinas / Temporizadores', icon: 'Clock' },
+  { id: 'relays', label: 'Bobinas / Timers', icon: 'Clock' },
   { id: 'signaling', label: 'Señalización', icon: 'Lightbulb' },
-  { id: 'wires', label: 'Cables / Conexiones', icon: 'Spline' },
+  { id: 'plc', label: 'PLC TIA S7-1200', icon: 'Cpu' },
+  { id: 'actuators', label: 'Neumática', icon: 'Gauge' },
   { id: 'grafcet', label: 'GRAFCET', icon: 'Workflow' },
-  { id: 'plc', label: 'PLC / Entradas-Salidas', icon: 'Cpu' },
+  { id: 'wires', label: 'Cables', icon: 'Spline' }
 ];

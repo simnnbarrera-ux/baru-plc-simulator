@@ -8,6 +8,14 @@ export interface ElectricalNode {
   wireIds: string[];        // Lista de cables que forman este nodo
 }
 
+export interface PneumaticState {
+  position: number;         // 0.0 (retraído a0) a 1.0 (extendido a1)
+  isExtending: boolean;
+  isRetracting: boolean;
+  atStart: boolean;         // Final de carrera a0/b0
+  atEnd: boolean;           // Final de carrera a1/b1
+}
+
 export interface SimulationState {
   mode: SimulationMode;
   simulationTime: number;   // Tiempo transcurrido en segundos
@@ -33,4 +41,5 @@ export interface SimulationState {
     color: 'red' | 'green' | 'yellow' | 'blue' | 'white';
     isLit: boolean;
   }>;
+  pneumaticStates?: Map<string, PneumaticState>;
 }
