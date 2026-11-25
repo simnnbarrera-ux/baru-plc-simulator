@@ -1338,6 +1338,11 @@ export const App: React.FC = () => {
         />
       </div>
 
+      {/* Pie de página */}
+      <footer className="shrink-0 bg-white/95 border-t border-slate-200/80 px-4 py-1 text-center text-[11px] text-slate-500 select-none z-30">
+        Desarrollado por Scibaru AI. (Simón Barrera Ruíz)
+      </footer>
+
       {/* Modales Cloud & Auth */}
       <AuthModal
         isOpen={authModalState.open}
@@ -1457,7 +1462,7 @@ export const App: React.FC = () => {
       {/* Notificaciones Toast */}
       {toast && (
         <div
-          className={`fixed bottom-6 right-6 z-[80] flex items-center gap-2.5 px-4 py-2.5 rounded-2xl shadow-2xl text-xs font-semibold select-none animate-in fade-in slide-in-from-bottom-3 duration-200 ${
+          className={`fixed bottom-9 right-6 z-[80] flex items-center gap-2.5 px-4 py-2.5 rounded-2xl shadow-2xl text-xs font-semibold select-none animate-in fade-in slide-in-from-bottom-3 duration-200 ${
             toast.type === 'error'
               ? 'bg-rose-700 text-white border border-rose-500'
               : toast.type === 'info'
