@@ -5,6 +5,8 @@
 
 export type TiaLanguage = 'LAD' | 'SCL' | 'GRAFCET';
 
+export type GemmaMode = 'AU' | 'CL' | 'ET' | 'MAN';
+
 export type TiaContactType = 'NO' | 'NC';
 export type TiaCoilType = 'OUT' | 'SET' | 'RESET';
 
@@ -116,6 +118,12 @@ export interface TiaRuntimeState {
   sclWatch: Record<string, string>;           // Valores en vivo para SCL
   sclErrors: TiaSclError[];
   scanCount: number;
+  gemmaMode: GemmaMode;
+  emergencyStop: boolean;
+  rearmPulse: boolean;
+  cyclePulse: boolean;
+  stepPulse: boolean;
+  gemmaStateCode: string; // 'A1' | 'F1' | 'F4' | 'F5' | 'A2' | 'A6' | 'D1'
 }
 
 export const DEFAULT_TIA_PROGRAM: TiaProgramDocument = {
@@ -218,7 +226,13 @@ export function createInitialRuntime(program: TiaProgramDocument): TiaRuntimeSta
     elementPowerFlow: {},
     sclWatch: {},
     sclErrors: [],
-    scanCount: 0
+    scanCount: 0,
+    gemmaMode: 'AU',
+    emergencyStop: false,
+    rearmPulse: false,
+    cyclePulse: false,
+    stepPulse: false,
+    gemmaStateCode: 'A1'
   };
 }
 
@@ -279,8 +293,8 @@ function evaluateBooleanExpr(
   state: { inputs: Record<string, boolean>; outputs: Record<string, boolean>; memory: Record<string, boolean>; timers: Record<string, TiaTimerRuntime>; counters: Record<string, TiaCounterRuntime> },
   tags: TiaTag[]
 ): boolean {
-  // Tokenize: (, ), NOT, AND, XOR, OR, identifiers/strings
-  const tokenRegex = /"[^"]+"|%[IQM]\d+\.\d+|[A-Za-z_][A-Za-z0-9_]*\.Q|[A-Za-z_][A-Za-z0-9_]*|\(|\)|AND|OR|XOR|NOT|&|\|/gi;
+  // Tokenize: (, ), <>, =, NOT, AND, XOR, OR, identifiers/strings
+  const tokenRegex = /"[^"]+"|%[IQM]\d+\.\d+|[A-Za-z_][A-Za-z0-9_]*\.Q|[A-Za-z_][A-Za-z0-9_]*|\(|\)|<>|=|AND|OR|XOR|NOT|&|\|/gi;
   const rawTokens = expr.match(tokenRegex) || [];
   let pos = 0;
 
@@ -308,11 +322,21 @@ function evaluateBooleanExpr(
   }
 
   function parseAnd(): boolean {
-    let left = parseUnary();
+    let left = parseComparison();
     while (peek() && (peek().toUpperCase() === 'AND' || peek() === '&')) {
       consume();
-      const right = parseUnary();
+      const right = parseComparison();
       left = left && right;
+    }
+    return left;
+  }
+
+  function parseComparison(): boolean {
+    let left = parseUnary();
+    while (peek() === '=' || peek() === '<>') {
+      const op = consume();
+      const right = parseUnary();
+      left = op === '=' ? left === right : left !== right;
     }
     return left;
   }
@@ -369,8 +393,11 @@ export function executeSclCode(
   const errors: TiaSclError[] = [];
   const watch: Record<string, string> = {};
 
-  // Strip block comments (* ... *) and line comments // ...
-  const lines = sclCode.split(/\r?\n/);
+  // Strip multi-line block comments (* ... *) preserving line numbers before splitting lines
+  const withoutBlockComments = sclCode.replace(/\(\*[\s\S]*?\*\)/g, match =>
+    match.replace(/[^\r\n]/g, '')
+  );
+  const lines = withoutBlockComments.split(/\r?\n/);
 
   interface BlockFrame {
     active: boolean;       // Si esta rama IF está ejecutándose
@@ -382,11 +409,11 @@ export function executeSclCode(
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
-    let line = lines[i].replace(/\/\/.*$/, '').replace(/\(\*.*?\*\)/g, '').trim();
+    const line = lines[i].replace(/\/\/.*$/, '').trim();
     if (!line) continue;
 
-    // Ignorar encabezados si el usuario pegó un bloque SCL completo de TIA
-    if (/^(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|TITLE|VAR_INPUT|VAR_OUTPUT|VAR_TEMP|VAR|END_VAR|BEGIN|END_ORGANIZATION_BLOCK|END_FUNCTION_BLOCK|END_FUNCTION|VERSION)/i.test(line)) {
+    // Ignorar encabezados y regiones si el usuario pegó un bloque SCL completo de TIA
+    if (/^(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|TITLE|VAR_INPUT|VAR_OUTPUT|VAR_TEMP|VAR|END_VAR|BEGIN|END_ORGANIZATION_BLOCK|END_FUNCTION_BLOCK|END_FUNCTION|VERSION|REGION\b|END_REGION\b)/i.test(line)) {
       continue;
     }
 
@@ -502,7 +529,13 @@ export function stepTiaScanCycle(
 ): TiaRuntimeState {
   const dtSec = Math.max(0.001, deltaMs / 1000);
 
-  // 1. Imagen de Proceso de Entradas (PII): Físicas OR Forzadas
+  const gemmaMode: GemmaMode = prevRuntime.gemmaMode || 'AU';
+  const emergencyStop = Boolean(prevRuntime.emergencyStop);
+  const rearmPulse = Boolean(prevRuntime.rearmPulse);
+  const cyclePulse = Boolean(prevRuntime.cyclePulse);
+  const stepPulse = Boolean(prevRuntime.stepPulse);
+
+  // 1. Imagen de Proceso de Entradas (PII): Físicas OR Forzadas + Señales GEMMA
   const inputs: Record<string, boolean> = {};
   for (const k of Object.keys(physicalInputs)) {
     inputs[k.toUpperCase()] = physicalInputs[k];
@@ -511,6 +544,19 @@ export function stepTiaScanCycle(
     if (prevRuntime.forcedInputs[k]) {
       inputs[k.toUpperCase()] = true;
     }
+  }
+
+  const physI83 = physicalInputs['%I8.3'] ?? physicalInputs['%i8.3'];
+  const physI84 = physicalInputs['%I8.4'] ?? physicalInputs['%i8.4'];
+  inputs['%I8.0'] = gemmaMode === 'MAN' || Boolean(inputs['%I8.0']);
+  inputs['%I8.1'] = cyclePulse || Boolean(inputs['%I8.1']);
+  inputs['%I8.2'] = stepPulse || Boolean(inputs['%I8.2']);
+  inputs['%I8.3'] = emergencyStop ? false : (physI83 !== undefined ? physI83 : (inputs['%I8.3'] ?? true));
+  inputs['%I8.4'] = rearmPulse ? false : (physI84 !== undefined ? physI84 : (inputs['%I8.4'] ?? true));
+  inputs['%I8.5'] = gemmaMode === 'CL' || Boolean(inputs['%I8.5']);
+  inputs['%I8.6'] = gemmaMode === 'ET' || Boolean(inputs['%I8.6']);
+  if (emergencyStop) {
+    inputs['%I0.1'] = true;
   }
 
   const outputs: Record<string, boolean> = { ...prevRuntime.outputs };
@@ -522,6 +568,20 @@ export function stepTiaScanCycle(
   let activeSteps = [...prevRuntime.activeSteps];
   let sclWatch: Record<string, string> = {};
   let sclErrors: TiaSclError[] = [];
+
+  // Al soltar PE, limpiar indicador rojo previo salvo que el programa lo reactive
+  if (!emergencyStop && prevRuntime.emergencyStop) {
+    outputs['%Q8.4'] = false;
+  }
+
+  // Rearme GEMMA (A6): limpia salidas, memorias, temporizadores y retorna a etapas iniciales
+  if (rearmPulse && !emergencyStop) {
+    for (const k of Object.keys(outputs)) outputs[k] = false;
+    for (const k of Object.keys(memory)) memory[k] = false;
+    for (const k of Object.keys(timers)) delete timers[k];
+    const initSteps = program.grafcetSteps.filter(s => s.isInitial).map(s => s.id);
+    activeSteps = initSteps.length > 0 ? initSteps : [0];
+  }
 
   const evalCtx = { inputs, outputs, memory, timers, counters };
 
@@ -618,24 +678,111 @@ export function stepTiaScanCycle(
     sclWatch = res.watch;
     sclErrors = res.errors;
   } else if (program.activeLanguage === 'GRAFCET') {
-    // Evaluar transiciones activas de GRAFCET
+    const initialStepIds = new Set(
+      program.grafcetSteps.filter(s => s.isInitial).map(s => s.id)
+    );
     const nextSteps = new Set<number>(activeSteps);
-    for (const tr of program.grafcetTransitions) {
-      if (activeSteps.includes(tr.fromStep)) {
-        const condMet = evaluateBooleanExpr(tr.condition, evalCtx, program.tags);
-        if (condMet) {
-          nextSteps.delete(tr.fromStep);
-          nextSteps.add(tr.toStep);
+
+    if (!emergencyStop && !rearmPulse && gemmaMode !== 'MAN') {
+      if (gemmaMode === 'ET') {
+        // Etapa a Etapa: solo avanza como máximo UNA transición con pulso +1 Etapa
+        if (stepPulse) {
+          for (const tr of program.grafcetTransitions) {
+            if (activeSteps.includes(tr.fromStep)) {
+              const condMet = evaluateBooleanExpr(tr.condition, evalCtx, program.tags);
+              if (condMet) {
+                nextSteps.delete(tr.fromStep);
+                nextSteps.add(tr.toStep);
+                break;
+              }
+            }
+          }
+        }
+      } else {
+        for (const tr of program.grafcetTransitions) {
+          if (!activeSteps.includes(tr.fromStep)) continue;
+          if (
+            gemmaMode === 'CL' &&
+            initialStepIds.has(tr.fromStep) &&
+            !cyclePulse &&
+            inputs['%I0.0'] !== true
+          ) {
+            continue;
+          }
+          const condMet = evaluateBooleanExpr(tr.condition, evalCtx, program.tags);
+          if (condMet) {
+            nextSteps.delete(tr.fromStep);
+            nextSteps.add(tr.toStep);
+          }
         }
       }
     }
+
     activeSteps = Array.from(nextSteps);
-    // Reset outputs y activar acciones de etapas activas
-    for (const step of program.grafcetSteps) {
-      if (step.actionTag) {
-        writeOperand(step.actionTag, activeSteps.includes(step.id), evalCtx, program.tags);
+
+    if (gemmaMode !== 'MAN') {
+      // Primero limpiar salidas propias del GRAFCET y luego activar las de etapas activas
+      for (const step of program.grafcetSteps) {
+        if (step.actionTag) {
+          writeOperand(step.actionTag, false, evalCtx, program.tags);
+        }
+      }
+      for (const step of program.grafcetSteps) {
+        if (step.actionTag && activeSteps.includes(step.id)) {
+          writeOperand(step.actionTag, true, evalCtx, program.tags);
+        }
       }
     }
+  }
+
+  // Override duro de seguridad ante Parada de Emergencia (GEMMA D1)
+  if (emergencyStop) {
+    for (let bit = 0; bit < 8; bit++) {
+      outputs[`%Q0.${bit}`] = false;
+      outputs[`%Q1.${bit}`] = false;
+    }
+    outputs['%Q8.0'] = false;
+    outputs['%Q8.1'] = false;
+    outputs['%Q8.2'] = false;
+    outputs['%Q8.3'] = false;
+    outputs['%Q8.4'] = true;
+
+    if (program.activeLanguage === 'GRAFCET') {
+      const hasStep32 = program.grafcetSteps.some(s => s.id === 32);
+      if (hasStep32) {
+        if (!activeSteps.includes(32)) {
+          activeSteps = [...activeSteps, 32];
+        }
+      } else {
+        const initSteps = program.grafcetSteps.filter(s => s.isInitial).map(s => s.id);
+        activeSteps = initSteps.length > 0 ? [initSteps[0]] : [0];
+      }
+    }
+  }
+
+  // Calcular código de estado GEMMA activo (excluyendo pilotos de torreta %Q8.2..%Q8.4)
+  const hasProdOutput = Object.entries(outputs).some(([addr, val]) => {
+    const up = addr.toUpperCase();
+    return val && up.startsWith('%Q') && up !== '%Q8.2' && up !== '%Q8.3' && up !== '%Q8.4';
+  });
+  const hasProductionActivity =
+    hasProdOutput ||
+    Boolean(memory['%M0.0']) ||
+    activeSteps.some(s => s > 0 && s < 20);
+
+  let gemmaStateCode: string = 'A1';
+  if (emergencyStop) {
+    gemmaStateCode = 'D1';
+  } else if (rearmPulse) {
+    gemmaStateCode = 'A6';
+  } else if (gemmaMode === 'MAN') {
+    gemmaStateCode = 'F4';
+  } else if (gemmaMode === 'ET') {
+    gemmaStateCode = 'F5';
+  } else if (gemmaMode === 'CL' && hasProductionActivity) {
+    gemmaStateCode = 'A2';
+  } else if (hasProductionActivity) {
+    gemmaStateCode = 'F1';
   }
 
   return {
@@ -650,7 +797,13 @@ export function stepTiaScanCycle(
     elementPowerFlow,
     sclWatch,
     sclErrors,
-    scanCount: prevRuntime.scanCount + 1
+    scanCount: prevRuntime.scanCount + 1,
+    gemmaMode,
+    emergencyStop,
+    rearmPulse: false,
+    cyclePulse: false,
+    stepPulse: false,
+    gemmaStateCode
   };
 }
 

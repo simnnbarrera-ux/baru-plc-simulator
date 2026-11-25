@@ -86,7 +86,7 @@ export const UnifiedExportModal: React.FC<Props> = ({
 
   // --- Descargas CADe_SIMU ---
   const handleDownloadCad = () => {
-    const cadContent = CadParser.export(circuitDoc);
+    const cadContent = CadParser.export(circuitDoc, tiaProgram);
     triggerTextDownload(cadContent, `${safeProjectName}.cad`);
   };
 
@@ -206,9 +206,7 @@ export const UnifiedExportModal: React.FC<Props> = ({
       const extractedTia = CadParser.extractTiaProgram(circuit);
       onImportCircuit(circuit, extractedTia);
       onShowToast?.(
-        extractedTia
-          ? `CADe_SIMU importado (${circuit.components.length} comp. + lógica ${extractedTia.activeLanguage}/SCL sincronizada)`
-          : `Esquema CADe_SIMU importado (${circuit.components.length} componentes, ${circuit.wires.length} cables)`,
+        `CADe_SIMU importado (${circuit.components.length} comp.) — LAD (${extractedTia.rungs.length} redes) + SCL + GRAFCET (${extractedTia.grafcetSteps.length} etapas) auto-ensamblados`,
         'success'
       );
       onClose();
@@ -292,8 +290,8 @@ export const UnifiedExportModal: React.FC<Props> = ({
                     </div>
                   </div>
                   <div className="text-[11px] text-slate-600 bg-white rounded-xl p-2.5 border border-slate-200/80 space-y-1">
-                    <div>Componentes: <b>{circuitDoc.components.length}</b></div>
-                    <div>Cables: <b>{circuitDoc.wires.length}</b></div>
+                    <div>Esquema Power/PLC: <b>{circuitDoc.components.length} comp.</b> ({circuitDoc.wires.length} cables)</div>
+                    <div>Ladder: <b>{tiaProgram.rungs.length} redes</b> • GRAFCET: <b>{tiaProgram.grafcetSteps.length} etapas</b></div>
                     <div>Cajetín ISO 7200: <b>Simón Barrera Ruíz</b></div>
                   </div>
                 </div>

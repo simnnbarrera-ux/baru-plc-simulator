@@ -558,7 +558,18 @@ export const ComponentRenderer: React.FC<Props> = ({
           <g>
             <line x1={gridSize} y1={0} x2={gridSize} y2={height} className="stroke-slate-900 stroke-2" />
             <line x1={gridSize * 0.3} y1={gridSize} x2={gridSize * 1.7} y2={gridSize} className="stroke-slate-900 stroke-[3] stroke-linecap-round" />
-            <text x={gridSize * 1.9} y={gridSize * 1.1} className="text-xs font-mono font-bold fill-blue-700 select-none">
+            <text
+              x={gridSize * 1.65}
+              y={gridSize * 1.15}
+              fontSize="10"
+              fontFamily="monospace"
+              fontWeight="700"
+              fill="#1d4ed8"
+              stroke="#ffffff"
+              strokeWidth={3.5}
+              paintOrder="stroke"
+              className="select-none"
+            >
               {component.tag}
             </text>
           </g>
@@ -567,9 +578,21 @@ export const ComponentRenderer: React.FC<Props> = ({
       case 'grafcet_action':
         return (
           <g>
-            <line x1={0} y1={gridSize} x2={gridSize * 0.5} y2={gridSize} className="stroke-slate-900 stroke-2" />
-            <rect x={gridSize * 0.5} y={gridSize * 0.25} width={gridSize * 2.3} height={gridSize * 1.5} rx={2} className="fill-blue-50/90 stroke-blue-700 stroke-2" />
-            <text x={gridSize * 1.65} y={gridSize * 1.1} textAnchor="middle" className="text-xs font-mono font-bold fill-blue-900 select-none">
+            <line x1={0} y1={gridSize} x2={gridSize * 0.45} y2={gridSize} className="stroke-slate-900 stroke-2" />
+            <rect
+              x={gridSize * 0.45}
+              y={gridSize * 0.22}
+              width={gridSize * 2.55}
+              height={gridSize * 1.56}
+              rx={2}
+              className="fill-blue-50/90 stroke-blue-700 stroke-2"
+            />
+            <text
+              x={gridSize * 1.725}
+              y={gridSize * 1.12}
+              textAnchor="middle"
+              className="text-[10px] font-mono font-bold fill-blue-900 select-none"
+            >
               {component.tag}
             </text>
           </g>
@@ -868,12 +891,67 @@ export const ComponentRenderer: React.FC<Props> = ({
         );
       }
 
+      case 'cad_text': {
+        const textLen = (component.tag || '').length;
+        const bannerW = Math.max(width, textLen * 7.2 + 16);
+        return (
+          <g>
+            <rect
+              x={0}
+              y={1}
+              width={bannerW}
+              height={height - 2}
+              rx={4}
+              className="fill-slate-100/90 stroke-slate-300 stroke-1"
+            />
+            <line
+              x1={4}
+              y1={height - 2}
+              x2={bannerW - 4}
+              y2={height - 2}
+              className="stroke-sky-600/70 stroke-1.5"
+            />
+            <text
+              x={8}
+              y={height * 0.68}
+              className="font-mono font-extrabold text-[11px] uppercase fill-slate-700 tracking-wide select-none"
+            >
+              {component.tag}
+            </text>
+            {component.value && (
+              <text
+                x={8}
+                y={height + 10}
+                className="font-mono font-medium text-[9px] fill-slate-500 select-none"
+              >
+                {component.value}
+              </text>
+            )}
+          </g>
+        );
+      }
+
       default:
         return (
           <rect x={0} y={0} width={width} height={height} className="fill-white stroke-slate-800 stroke-1" />
         );
     }
   };
+
+  const suppressExternalTag =
+    component.type.startsWith('grafcet_') ||
+    component.type.startsWith('plc_ladder_') ||
+    component.type === 'cad_text' ||
+    component.type === 'plc_input_module' ||
+    component.type === 'plc_output_module' ||
+    component.type === 'power_l' ||
+    component.type === 'power_n' ||
+    component.type === 'power_pe' ||
+    component.type === 'power_dc';
+
+  const isLogicSymbol =
+    component.type.startsWith('grafcet_') ||
+    component.type.startsWith('plc_ladder_');
 
   return (
     <g
@@ -895,25 +973,31 @@ export const ComponentRenderer: React.FC<Props> = ({
       )}
 
       {/* Renderizado de pines con numeración terminal */}
-      {def.pins.map(pin => {
-        let px = pin.relX * gridSize;
-        let py = pin.relY * gridSize;
+      {component.type !== 'cad_text' && def.pins.map(pin => {
+        const px = pin.relX * gridSize;
+        const py = pin.relY * gridSize;
         return (
           <g key={pin.id}>
             <circle
               cx={px}
               cy={py}
-              r={2.5}
-              className="fill-slate-600 hover:fill-blue-600 transition-colors"
+              r={isLogicSymbol ? 1.5 : 2.5}
+              className={
+                isLogicSymbol
+                  ? 'fill-slate-600 opacity-40 hover:opacity-100 hover:fill-blue-600 transition-colors'
+                  : 'fill-slate-600 hover:fill-blue-600 transition-colors'
+              }
             />
             {/* Texto de número de borne */}
-            <text
-              x={px + 4}
-              y={py + 3}
-              className="text-[9px] font-mono font-medium fill-slate-500 select-none pointer-events-none"
-            >
-              {pin.label}
-            </text>
+            {!isLogicSymbol && (
+              <text
+                x={px + 4}
+                y={py + 3}
+                className="text-[9px] font-mono font-medium fill-slate-500 select-none pointer-events-none"
+              >
+                {pin.label}
+              </text>
+            )}
           </g>
         );
       })}
@@ -922,14 +1006,16 @@ export const ComponentRenderer: React.FC<Props> = ({
       {renderSymbol()}
 
       {/* Etiqueta de referencia (Tag) y Vínculo PLC TIA */}
-      <text
-        x={width + 4}
-        y={gridSize * 1.2}
-        className="text-xs font-mono font-bold fill-slate-900 select-none pointer-events-none"
-      >
-        {component.tag}
-      </text>
-      {component.plcAddress && (
+      {!suppressExternalTag && (
+        <text
+          x={width + 4}
+          y={gridSize * 1.2}
+          className="text-xs font-mono font-bold fill-slate-900 select-none pointer-events-none"
+        >
+          {component.tag}
+        </text>
+      )}
+      {component.plcAddress && component.type !== 'cad_text' && (
         <g transform={`translate(${width + 4}, ${gridSize * 1.45})`} className="pointer-events-none">
           <rect x={0} y={0} width={Math.max(36, component.plcAddress.length * 6.5)} height={14} rx={4} className="fill-sky-100 stroke-sky-500 stroke-1" />
           <text x={4} y={10} className="text-[9px] font-mono font-bold fill-sky-800 select-none">

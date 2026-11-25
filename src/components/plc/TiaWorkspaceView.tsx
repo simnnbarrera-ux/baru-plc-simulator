@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Cpu,
   Eye,
@@ -11,7 +11,15 @@ import {
   CheckCircle2,
   AlertTriangle,
   Sparkles,
-  Tag
+  Tag,
+  ShieldAlert,
+  RotateCcw,
+  Play,
+  SkipForward,
+  Search,
+  Filter,
+  Activity,
+  X
 } from 'lucide-react';
 import {
   TiaProgramDocument,
@@ -21,10 +29,62 @@ import {
   TiaLadderCoil,
   TiaTag,
   TiaLanguage,
+  GemmaMode,
   transpileLadderToScl,
   resolveAddress
 } from '../../core/plc/tiaEngine';
 import { SimulationMode } from '../../types/simulation';
+
+type LadCategory = 'all' | 'prod' | 'gemma' | 'safety' | 'io';
+
+const GEMMA_STATE_META: Record<string, { label: string; badgeCls: string }> = {
+  A1: { label: 'A1 REPOSO', badgeCls: 'bg-slate-100 text-slate-700 border-slate-300' },
+  F1: { label: 'F1 PRODUCCIÓN', badgeCls: 'bg-emerald-100 text-emerald-800 border-emerald-300' },
+  A2: { label: 'A2 CICLO A CICLO', badgeCls: 'bg-sky-100 text-sky-800 border-sky-300' },
+  F5: { label: 'F5 ETAPA A ETAPA', badgeCls: 'bg-violet-100 text-violet-800 border-violet-300' },
+  F4: { label: 'F4 MANUAL', badgeCls: 'bg-amber-100 text-amber-800 border-amber-300' },
+  A6: { label: 'A6 REARME', badgeCls: 'bg-orange-100 text-orange-800 border-orange-300' },
+  D1: { label: 'D1 EMERGENCIA', badgeCls: 'bg-rose-600 text-white border-rose-700 animate-pulse' }
+};
+
+const SAFETY_RE = /PE|emerg|falla|rearme|seguridad|D1|A6|E3[0-2]|FG/i;
+const GEMMA_RE = /GEMMA|MAN|CL|ET|conducc|E2[0-7]|A1|F1|F4|F5/i;
+const IO_RE = /salida|bobina|valvul|cilindro|TON|temporiz|torreta|Q0|Q1|Q8/i;
+
+function getRungSearchCorpus(rung: TiaLadderRung, tags: TiaTag[]): string {
+  const resolveName = (addr: string) => {
+    const norm = resolveAddress(addr, tags);
+    return tags.find(t => t.address.toUpperCase() === norm)?.name ?? '';
+  };
+  const parts: string[] = [`nw ${rung.number}`, `segmento ${rung.number}`, rung.comment];
+  for (const br of rung.branches) {
+    for (const c of br.contacts) {
+      parts.push(c.address, resolveName(c.address));
+    }
+  }
+  for (const sc of rung.seriesContacts) {
+    parts.push(sc.address, resolveName(sc.address));
+  }
+  for (const co of rung.coils) {
+    parts.push(co.address, resolveName(co.address));
+  }
+  if (rung.timer) parts.push(rung.timer.name, rung.timer.type);
+  if (rung.counter) parts.push(rung.counter.name);
+  return parts.join(' ');
+}
+
+function matchesLadCategory(rung: TiaLadderRung, category: LadCategory, tags: TiaTag[]): boolean {
+  if (category === 'all') return true;
+  const corpus = getRungSearchCorpus(rung, tags);
+  if (category === 'safety') return SAFETY_RE.test(corpus);
+  if (category === 'gemma') return GEMMA_RE.test(corpus);
+  if (category === 'io') return Boolean(rung.timer) || IO_RE.test(corpus);
+  // 'prod': etapas de producción o segmentos no clasificados exclusivamente en seguridad/gemma/io
+  return (
+    /producc|estaci|banda|botella|llenado|tapado|cabezal|\bE(?:[0-9]|1[0-8])\b/i.test(corpus) ||
+    (!SAFETY_RE.test(corpus) && !GEMMA_RE.test(corpus) && !IO_RE.test(corpus) && !rung.timer)
+  );
+}
 
 interface Props {
   program: TiaProgramDocument;
@@ -33,6 +93,11 @@ interface Props {
   onChangeProgram: (next: TiaProgramDocument) => void;
   onToggleForceInput: (address: string) => void;
   onShowToast?: (msg: string, type?: 'success' | 'error' | 'info') => void;
+  onSetGemmaMode?: (mode: GemmaMode) => void;
+  onToggleEmergencyStop?: () => void;
+  onTriggerRearm?: () => void;
+  onTriggerCyclePulse?: () => void;
+  onTriggerStepPulse?: () => void;
 }
 
 export const TiaWorkspaceView: React.FC<Props> = ({
@@ -41,12 +106,70 @@ export const TiaWorkspaceView: React.FC<Props> = ({
   simulationMode,
   onChangeProgram,
   onToggleForceInput,
-  onShowToast
+  onShowToast,
+  onSetGemmaMode,
+  onToggleEmergencyStop,
+  onTriggerRearm,
+  onTriggerCyclePulse,
+  onTriggerStepPulse
 }) => {
   const [onlineGlasses, setOnlineGlasses] = useState<boolean>(true);
   const [editingTagIdx, setEditingTagIdx] = useState<number | null>(null);
+  const [ladSearch, setLadSearch] = useState<string>('');
+  const [ladCategory, setLadCategory] = useState<LadCategory>('all');
 
   const isOnlineActive = onlineGlasses && simulationMode === 'running';
+  const gemmaMode: GemmaMode = runtime.gemmaMode || 'AU';
+  const gemmaStateMeta =
+    GEMMA_STATE_META[runtime.gemmaStateCode || 'A1'] || GEMMA_STATE_META.A1;
+
+  // Entradas DI y Salidas DQ dinámicas desde PLC Tags (máx. 12 compactas)
+  const displayedDiTags = useMemo(() => {
+    const seen = new Set<string>();
+    const list: Array<{ address: string; name: string }> = [];
+    for (const t of program.tags) {
+      const addr = t.address.toUpperCase();
+      if (addr.startsWith('%I') && !seen.has(addr)) {
+        seen.add(addr);
+        list.push({ address: addr, name: t.name });
+      }
+    }
+    if (list.length === 0) {
+      return ['%I0.0', '%I0.1', '%I0.2', '%I0.3', '%I0.4'].map(a => ({
+        address: a,
+        name: a
+      }));
+    }
+    return list.slice(0, 12);
+  }, [program.tags]);
+
+  const displayedDqTags = useMemo(() => {
+    const seen = new Set<string>();
+    const list: Array<{ address: string; name: string }> = [];
+    for (const t of program.tags) {
+      const addr = t.address.toUpperCase();
+      if (addr.startsWith('%Q') && !seen.has(addr)) {
+        seen.add(addr);
+        list.push({ address: addr, name: t.name });
+      }
+    }
+    if (list.length === 0) {
+      return ['%Q0.0', '%Q0.1', '%Q0.2', '%Q0.3'].map(a => ({
+        address: a,
+        name: a
+      }));
+    }
+    return list.slice(0, 12);
+  }, [program.tags]);
+
+  const filteredRungs = useMemo(() => {
+    const q = ladSearch.trim().toLowerCase();
+    return program.rungs.filter(rung => {
+      if (!matchesLadCategory(rung, ladCategory, program.tags)) return false;
+      if (!q) return true;
+      return getRungSearchCorpus(rung, program.tags).toLowerCase().includes(q);
+    });
+  }, [program.rungs, program.tags, ladCategory, ladSearch]);
 
   const setLanguage = (lang: TiaLanguage) => {
     onChangeProgram({ ...program, activeLanguage: lang });
@@ -241,26 +364,26 @@ export const TiaWorkspaceView: React.FC<Props> = ({
           {/* Entradas DI (Clickables para probar sin cablear o forzar señal) */}
           <div>
             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex justify-between">
-              <span>Entradas DI (Clic para simular/forzar)</span>
+              <span>Entradas DI ({displayedDiTags.length})</span>
               <span className="text-sky-400">24V DC</span>
             </div>
-            <div className="grid grid-cols-5 gap-1.5">
-              {['%I0.0', '%I0.1', '%I0.2', '%I0.3', '%I0.4'].map((addr, idx) => {
-                const isHigh = Boolean(runtime.inputs[addr]);
-                const isForced = Boolean(runtime.forcedInputs[addr]);
+            <div className="grid grid-cols-4 gap-1.5">
+              {displayedDiTags.map((tag) => {
+                const isHigh = Boolean(runtime.inputs[tag.address]);
+                const isForced = Boolean(runtime.forcedInputs[tag.address]);
                 return (
                   <button
-                    key={addr}
-                    onClick={() => onToggleForceInput(addr)}
-                    title={`Forzar entrada ${addr} (${getTagLabel(addr)})`}
-                    className={`py-1.5 rounded-lg border font-mono text-[10px] font-bold flex flex-col items-center gap-0.5 transition-all cursor-pointer ${
+                    key={tag.address}
+                    onClick={() => onToggleForceInput(tag.address)}
+                    title={`${tag.name} (${tag.address}) — Clic para forzar`}
+                    className={`py-1 px-1 rounded-lg border font-mono text-[10px] font-bold flex flex-col items-center gap-0.5 transition-all cursor-pointer ${
                       isHigh
                         ? 'bg-emerald-500/25 border-emerald-400 text-emerald-300'
                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500'
                     }`}
                   >
                     <span className={`w-2 h-2 rounded-full ${isHigh ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]' : 'bg-slate-600'}`} />
-                    <span>{`I0.${idx}`}</span>
+                    <span className="truncate max-w-full">{tag.address.replace('%', '')}</span>
                     {isForced && <span className="text-[8px] text-amber-300">FORZ</span>}
                   </button>
                 );
@@ -271,23 +394,24 @@ export const TiaWorkspaceView: React.FC<Props> = ({
           {/* Salidas DQ en vivo */}
           <div>
             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex justify-between">
-              <span>Salidas DQ (Relé en vivo)</span>
+              <span>Salidas DQ ({displayedDqTags.length})</span>
               <span className="text-emerald-400">PIQ</span>
             </div>
             <div className="grid grid-cols-4 gap-1.5">
-              {['%Q0.0', '%Q0.1', '%Q0.2', '%Q0.3'].map((addr, idx) => {
-                const isHigh = Boolean(runtime.outputs[addr]);
+              {displayedDqTags.map((tag) => {
+                const isHigh = Boolean(runtime.outputs[tag.address]);
                 return (
                   <div
-                    key={addr}
-                    className={`py-1.5 rounded-lg border font-mono text-[10px] font-bold flex flex-col items-center gap-0.5 ${
+                    key={tag.address}
+                    title={`${tag.name} (${tag.address})`}
+                    className={`py-1 px-1 rounded-lg border font-mono text-[10px] font-bold flex flex-col items-center gap-0.5 ${
                       isHigh
                         ? 'bg-amber-500/25 border-amber-400 text-amber-200'
                         : 'bg-slate-800 border-slate-700 text-slate-500'
                     }`}
                   >
                     <span className={`w-2 h-2 rounded-full ${isHigh ? 'bg-amber-400 shadow-[0_0_6px_#fbbf24]' : 'bg-slate-600'}`} />
-                    <span>{`Q0.${idx}`}</span>
+                    <span className="truncate max-w-full">{tag.address.replace('%', '')}</span>
                   </div>
                 );
               })}
@@ -459,10 +583,175 @@ export const TiaWorkspaceView: React.FC<Props> = ({
           </div>
         </div>
 
+        {/* CONSOLA OPERADOR GEMMA (AU / CL / ET / MAN / PE / Rearme / Pulsos) */}
+        <div className="px-4 py-2 bg-slate-900 text-slate-100 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono font-extrabold ${gemmaStateMeta.badgeCls}`}
+              title="Estado GEMMA activo en el PLC"
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>{gemmaStateMeta.label}</span>
+            </span>
+
+            <div className="flex items-center bg-slate-800 p-0.5 rounded-xl border border-slate-700">
+              {(
+                [
+                  { id: 'AU', label: 'AU' },
+                  { id: 'CL', label: 'CL (Ciclo)' },
+                  { id: 'ET', label: 'ET (Etapa)' },
+                  { id: 'MAN', label: 'MAN (Manual)' }
+                ] as const
+              ).map((m) => {
+                const active = gemmaMode === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => onSetGemmaMode?.(m.id)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                      active
+                        ? 'bg-sky-500 text-white shadow-2xs'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-700/70'
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => onTriggerCyclePulse?.()}
+              title="Enviar pulso de +1 Ciclo (I_Dcy / %I8.1)"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-400/40 transition-colors cursor-pointer"
+            >
+              <Play className="w-3 h-3" />
+              <span>+1 Ciclo (Dcy)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onTriggerStepPulse?.()}
+              title="Avanzar +1 Etapa en modo ET (I_Bp / %I8.2)"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-violet-500/20 hover:bg-violet-500/30 text-violet-200 border border-violet-400/40 transition-colors cursor-pointer"
+            >
+              <SkipForward className="w-3 h-3" />
+              <span>+1 Etapa (Bp)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onTriggerRearm?.()}
+              title="Rearme de seguridades y retorno a reposo inicial (GEMMA A6)"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-500/20 hover:bg-amber-500/35 text-amber-200 border border-amber-400/50 transition-colors cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Rearme (A6)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onToggleEmergencyStop?.()}
+              title="Parada de Emergencia con enclavamiento (GEMMA D1)"
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-extrabold border transition-all cursor-pointer ${
+                runtime.emergencyStop
+                  ? 'bg-rose-600 text-white border-rose-300 shadow-[0_0_12px_rgba(225,29,72,0.7)] animate-pulse'
+                  : 'bg-rose-950/70 hover:bg-rose-700 text-rose-200 border-rose-500/60'
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>PE — Emergencia (D1)</span>
+            </button>
+          </div>
+        </div>
+
         {/* CONTENIDO SEGÚN LENGUAJE */}
         {program.activeLanguage === 'LAD' && (
           <div className="flex-1 overflow-y-auto p-5 space-y-4">
-            {program.rungs.map((rung) => {
+            {program.rungs.length > 6 && (
+              <div className="bg-white rounded-2xl border border-slate-200 p-3 shadow-2xs flex flex-wrap items-center justify-between gap-2.5 sticky top-0 z-10">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-1 rounded-lg bg-slate-900 text-white font-mono text-xs font-extrabold">
+                    {program.rungs.length} Networks
+                  </span>
+                  {(ladSearch.trim() !== '' || ladCategory !== 'all') && (
+                    <span className="text-[11px] font-semibold text-slate-500">
+                      Mostrando {filteredRungs.length} de {program.rungs.length}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Filter className="w-3.5 h-3.5 text-slate-400 mr-0.5" />
+                  {(
+                    [
+                      { id: 'all', label: `Todos (${program.rungs.length})` },
+                      { id: 'prod', label: 'Producción' },
+                      { id: 'gemma', label: 'GEMMA / Modos' },
+                      { id: 'safety', label: 'Seguridad / PE' },
+                      { id: 'io', label: 'Salidas / TON' }
+                    ] as const
+                  ).map((pill) => (
+                    <button
+                      key={pill.id}
+                      type="button"
+                      onClick={() => setLadCategory(pill.id)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                        ladCategory === pill.id
+                          ? 'bg-sky-600 text-white border-sky-600'
+                          : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {pill.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="relative flex-1 min-w-[200px] max-w-xs">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={ladSearch}
+                    onChange={(e) => setLadSearch(e.target.value)}
+                    placeholder="Buscar NW, variable o dirección..."
+                    className="w-full pl-8 pr-7 py-1.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white text-xs text-slate-800 focus:outline-none focus:border-sky-400"
+                  />
+                  {ladSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setLadSearch('')}
+                      title="Limpiar búsqueda"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {filteredRungs.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-2">
+                <div className="text-sm font-bold text-slate-700">
+                  No se encontraron segmentos para el filtro actual
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLadSearch('');
+                    setLadCategory('all');
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-700 text-xs font-bold border border-sky-200 cursor-pointer"
+                >
+                  Restablecer filtros
+                </button>
+              </div>
+            ) : (
+              filteredRungs.map((rung) => {
               const rungActive = isOnlineActive && Boolean(runtime.rungPowerFlow[rung.id]);
               return (
                 <div
@@ -721,7 +1010,7 @@ export const TiaWorkspaceView: React.FC<Props> = ({
                   </div>
                 </div>
               );
-            })}
+            }))}
 
             <button
               onClick={handleAddRung}
@@ -836,64 +1125,179 @@ export const TiaWorkspaceView: React.FC<Props> = ({
 
         {program.activeLanguage === 'GRAFCET' && (
           <div className="flex-1 overflow-y-auto p-6 flex flex-col items-center gap-4">
-            <div className="max-w-xl w-full bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <div>
-                  <h4 className="text-sm font-extrabold text-slate-900">Control Secuencial GRAFCET (IEC 60848)</h4>
-                  <p className="text-xs text-slate-500">
-                    Las etapas activas ejecutan automáticamente sus acciones sobre el PLC S7-1200.
-                  </p>
+            {program.grafcetSteps.length > 10 ? (
+              <div className="w-full max-w-6xl space-y-4">
+                <div className="bg-white rounded-2xl border border-slate-200 px-5 py-3.5 shadow-2xs flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-extrabold text-slate-900">
+                      Control Secuencial GRAFCET GEMMA ({program.grafcetSteps.length} Etapas)
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Vista estructurada por jerarquía GEMMA: Producción, Conducción y Seguridad.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] font-mono font-bold">
+                    <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      Activas: {runtime.activeSteps.map(id => `E${id}`).join(', ') || 'Ninguna'}
+                    </span>
+                  </div>
                 </div>
-              </div>
 
-              <div className="flex flex-col items-center gap-2">
-                {program.grafcetSteps.map((step, i) => {
-                  const isActive = simulationMode === 'running' && runtime.activeSteps.includes(step.id);
-                  const tr = program.grafcetTransitions[i];
-                  return (
-                    <React.Fragment key={step.id}>
-                      <div className="flex items-center gap-4 w-full justify-center">
-                        <div
-                          className={`w-16 h-16 rounded-xl border-2 flex flex-col items-center justify-center font-mono font-extrabold transition-all ${
-                            isActive
-                              ? 'border-emerald-500 bg-emerald-50 text-emerald-700 shadow-md scale-105'
-                              : 'border-slate-700 bg-white text-slate-800'
-                          } ${step.isInitial ? 'ring-2 ring-offset-2 ring-slate-700' : ''}`}
-                        >
-                          <span className="text-base">{step.id}</span>
-                          <span className="text-[9px] uppercase">{step.name}</span>
-                        </div>
-
-                        <div className="w-6 h-0.5 bg-slate-400" />
-
-                        <div
-                          className={`flex-1 max-w-xs px-3 py-2 rounded-xl border text-xs ${
-                            isActive ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-slate-50 border-slate-200 text-slate-600'
-                          }`}
-                        >
-                          <div className="font-bold">{step.actionLabel}</div>
-                          {step.actionTag && (
-                            <div className="font-mono text-[10px] text-sky-700 font-bold">
-                              Salida: {step.actionTag}
-                            </div>
-                          )}
-                        </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+                  {[
+                    {
+                      key: 'prod',
+                      title: 'Producción (E0–E18)',
+                      accent: 'border-sky-200 bg-sky-50/70 text-sky-900',
+                      steps: program.grafcetSteps.filter(s => s.id <= 19)
+                    },
+                    {
+                      key: 'gemma',
+                      title: 'GEMMA / Conducción (E20–E29)',
+                      accent: 'border-violet-200 bg-violet-50/70 text-violet-900',
+                      steps: program.grafcetSteps.filter(s => s.id >= 20 && s.id <= 29)
+                    },
+                    {
+                      key: 'safety',
+                      title: 'Seguridad / Emergencia (E30+)',
+                      accent: 'border-rose-200 bg-rose-50/70 text-rose-900',
+                      steps: program.grafcetSteps.filter(s => s.id >= 30)
+                    }
+                  ].map((group) => (
+                    <div
+                      key={group.key}
+                      className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden"
+                    >
+                      <div className={`px-4 py-2.5 border-b font-extrabold text-xs flex items-center justify-between ${group.accent}`}>
+                        <span>{group.title}</span>
+                        <span className="font-mono text-[11px] opacity-80">{group.steps.length}</span>
                       </div>
 
-                      {tr && (
-                        <div className="flex flex-col items-center my-1">
-                          <div className="w-0.5 h-3 bg-slate-400" />
-                          <div className="px-3 py-1 rounded-full bg-slate-100 border border-slate-300 font-mono text-[11px] font-bold text-slate-700">
-                            ── {tr.label} ({tr.condition})
-                          </div>
-                          <div className="w-0.5 h-3 bg-slate-400" />
-                        </div>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
+                      <div className="p-3 space-y-2.5">
+                        {group.steps.map((step) => {
+                          const isActive = simulationMode === 'running' && runtime.activeSteps.includes(step.id);
+                          const isEmergencyStep = step.id === 32 && runtime.emergencyStop;
+                          const outTransitions = program.grafcetTransitions.filter(
+                            tr => tr.fromStep === step.id
+                          );
+                          return (
+                            <div
+                              key={step.id}
+                              className={`p-2.5 rounded-xl border transition-all space-y-2 ${
+                                isEmergencyStep
+                                  ? 'border-rose-500 bg-rose-50 text-rose-900 shadow-sm'
+                                  : isActive
+                                    ? 'border-emerald-500 bg-emerald-50 text-emerald-900 shadow-sm'
+                                    : 'border-slate-200 bg-slate-50/70 text-slate-700'
+                              }`}
+                            >
+                              <div className="flex items-start gap-2.5">
+                                <div
+                                  className={`w-12 h-12 shrink-0 rounded-xl border-2 flex flex-col items-center justify-center font-mono font-extrabold ${
+                                    isEmergencyStep
+                                      ? 'border-rose-600 bg-rose-600 text-white'
+                                      : isActive
+                                        ? 'border-emerald-500 bg-white text-emerald-700'
+                                        : 'border-slate-700 bg-white text-slate-800'
+                                  } ${step.isInitial ? 'ring-2 ring-offset-1 ring-slate-700' : ''}`}
+                                >
+                                  <span className="text-sm leading-none">{step.id}</span>
+                                  <span className="text-[8px] uppercase truncate max-w-[44px] mt-0.5">
+                                    {step.name}
+                                  </span>
+                                </div>
+
+                                <div className="min-w-0 flex-1 text-xs">
+                                  <div className="font-bold leading-snug">{step.actionLabel}</div>
+                                  {step.actionTag && (
+                                    <div className="font-mono text-[10px] text-sky-700 font-bold mt-0.5">
+                                      Salida: {step.actionTag}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {outTransitions.length > 0 && (
+                                <div className="pt-1.5 border-t border-slate-200/80 space-y-1">
+                                  {outTransitions.map((tr) => (
+                                    <div
+                                      key={tr.id}
+                                      className="px-2 py-0.5 rounded-md bg-white/90 border border-slate-200 font-mono text-[10px] text-slate-600 flex items-center justify-between gap-2"
+                                    >
+                                      <span className="truncate font-semibold">{tr.label} ({tr.condition})</span>
+                                      <span className="shrink-0 font-extrabold text-sky-700">→ E{tr.toStep}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="max-w-xl w-full bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div>
+                    <h4 className="text-sm font-extrabold text-slate-900">Control Secuencial GRAFCET (IEC 60848)</h4>
+                    <p className="text-xs text-slate-500">
+                      Las etapas activas ejecutan automáticamente sus acciones sobre el PLC S7-1200.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col items-center gap-2">
+                  {program.grafcetSteps.map((step, i) => {
+                    const isActive = simulationMode === 'running' && runtime.activeSteps.includes(step.id);
+                    const tr = program.grafcetTransitions[i];
+                    return (
+                      <React.Fragment key={step.id}>
+                        <div className="flex items-center gap-4 w-full justify-center">
+                          <div
+                            className={`w-16 h-16 rounded-xl border-2 flex flex-col items-center justify-center font-mono font-extrabold transition-all ${
+                              isActive
+                                ? 'border-emerald-500 bg-emerald-50 text-emerald-700 shadow-md scale-105'
+                                : 'border-slate-700 bg-white text-slate-800'
+                            } ${step.isInitial ? 'ring-2 ring-offset-2 ring-slate-700' : ''}`}
+                          >
+                            <span className="text-base">{step.id}</span>
+                            <span className="text-[9px] uppercase">{step.name}</span>
+                          </div>
+
+                          <div className="w-6 h-0.5 bg-slate-400" />
+
+                          <div
+                            className={`flex-1 max-w-xs px-3 py-2 rounded-xl border text-xs ${
+                              isActive ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-slate-50 border-slate-200 text-slate-600'
+                            }`}
+                          >
+                            <div className="font-bold">{step.actionLabel}</div>
+                            {step.actionTag && (
+                              <div className="font-mono text-[10px] text-sky-700 font-bold">
+                                Salida: {step.actionTag}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {tr && (
+                          <div className="flex flex-col items-center my-1">
+                            <div className="w-0.5 h-3 bg-slate-400" />
+                            <div className="px-3 py-1 rounded-full bg-slate-100 border border-slate-300 font-mono text-[11px] font-bold text-slate-700">
+                              ── {tr.label} ({tr.condition})
+                            </div>
+                            <div className="w-0.5 h-3 bg-slate-400" />
+                          </div>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </main>

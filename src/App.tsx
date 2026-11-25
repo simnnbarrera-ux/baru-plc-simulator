@@ -9,6 +9,7 @@ import {
 } from './core/examples';
 import {
   DEFAULT_TIA_PROGRAM,
+  GemmaMode,
   TiaProgramDocument,
   TiaRuntimeState,
   createInitialRuntime,
@@ -855,7 +856,14 @@ export const App: React.FC = () => {
   const handleStartSimulation = useCallback(() => {
     plcInputsRef.current = {};
     plcOutputsRef.current = {};
-    const freshTia = createInitialRuntime(tiaProgramRef.current);
+    const prevMode = tiaRuntimeRef.current.gemmaMode || 'AU';
+    const prevPe = Boolean(tiaRuntimeRef.current.emergencyStop);
+    const freshTia: TiaRuntimeState = {
+      ...createInitialRuntime(tiaProgramRef.current),
+      gemmaMode: prevMode,
+      emergencyStop: prevPe,
+      gemmaStateCode: prevPe ? 'D1' : prevMode === 'MAN' ? 'F4' : prevMode === 'ET' ? 'F5' : 'A1'
+    };
     tiaRuntimeRef.current = freshTia;
     setTiaRuntime(freshTia);
 
@@ -899,6 +907,148 @@ export const App: React.FC = () => {
       tiaRuntimeRef.current = updated;
       return updated;
     });
+  }, []);
+
+  // ---------------- Controles Consola GEMMA (AU / CL / ET / MAN / PE / Rearme) ----------------
+  const handleSetGemmaMode = useCallback(
+    (mode: GemmaMode) => {
+      setTiaRuntime(prev => {
+        const updated: TiaRuntimeState = { ...prev, gemmaMode: mode };
+        tiaRuntimeRef.current = updated;
+        return updated;
+      });
+      const labels: Record<GemmaMode, string> = {
+        AU: 'Automático (F1)',
+        CL: 'Ciclo a Ciclo (A2)',
+        ET: 'Etapa a Etapa (F5)',
+        MAN: 'Manual (F4)'
+      };
+      showToast(`Modo GEMMA: ${labels[mode]}`, 'info');
+    },
+    [showToast]
+  );
+
+  const handleToggleEmergencyStop = useCallback(() => {
+    setTiaRuntime(prev => {
+      const nextPe = !prev.emergencyStop;
+      const nextOutputs = { ...prev.outputs };
+      const nextMemory = { ...prev.memory };
+      const nextForced = { ...prev.forcedInputs };
+      if (nextPe) {
+        for (const k of Object.keys(nextOutputs)) {
+          nextOutputs[k] = false;
+        }
+        nextOutputs['%Q8.4'] = true;
+        nextMemory['%M0.0'] = false;
+        nextForced['%I0.0'] = false;
+        plcOutputsRef.current = nextOutputs;
+        plcInputsRef.current = { ...plcInputsRef.current, '%I0.0': false, '%I0.1': true, '%I8.3': false };
+        soundEffects.playErrorBuzzer();
+      } else {
+        nextOutputs['%Q8.4'] = false;
+        plcOutputsRef.current = nextOutputs;
+        plcInputsRef.current = { ...plcInputsRef.current, '%I0.1': false, '%I8.3': true };
+        soundEffects.playTripClick();
+      }
+      const updated: TiaRuntimeState = {
+        ...prev,
+        emergencyStop: nextPe,
+        outputs: nextOutputs,
+        memory: nextMemory,
+        forcedInputs: nextForced,
+        gemmaStateCode: nextPe ? 'D1' : 'A1'
+      };
+      tiaRuntimeRef.current = updated;
+      return updated;
+    });
+  }, []);
+
+  const handleTriggerRearm = useCallback(() => {
+    if (tiaRuntimeRef.current.emergencyStop) {
+      showToast('Libera primero el Paro de Emergencia (PE) antes de pulsar Rearme (A6)', 'error');
+      soundEffects.playErrorBuzzer();
+      return;
+    }
+    const initSteps = tiaProgramRef.current.grafcetSteps.filter(s => s.isInitial).map(s => s.id);
+    setTiaRuntime(prev => {
+      const clearedOutputs: Record<string, boolean> = {};
+      for (const k of Object.keys(prev.outputs)) clearedOutputs[k] = false;
+      const clearedMem: Record<string, boolean> = {};
+      for (const k of Object.keys(prev.memory)) clearedMem[k] = false;
+      plcOutputsRef.current = clearedOutputs;
+      const updated: TiaRuntimeState = {
+        ...prev,
+        outputs: clearedOutputs,
+        memory: clearedMem,
+        timers: {},
+        activeSteps: initSteps.length > 0 ? initSteps : [0],
+        rearmPulse: true,
+        gemmaStateCode: 'A6'
+      };
+      tiaRuntimeRef.current = updated;
+      return updated;
+    });
+    soundEffects.playSuccessChime();
+    showToast('Rearme GEMMA (A6 / RecFa) ejecutado — actuadores en posición inicial', 'success');
+  }, [showToast]);
+
+  const handleTriggerCyclePulse = useCallback(() => {
+    if (tiaRuntimeRef.current.emergencyStop) {
+      showToast('Paro de Emergencia (D1) activo — libera PE y rearma primero', 'error');
+      return;
+    }
+    if (simStateRef.current.mode !== 'running') {
+      handleStartSimulation();
+    }
+    setTiaRuntime(prev => {
+      const updated: TiaRuntimeState = { ...prev, cyclePulse: true };
+      tiaRuntimeRef.current = updated;
+      return updated;
+    });
+    soundEffects.playTripClick();
+  }, [handleStartSimulation, showToast]);
+
+  const handleTriggerStepPulse = useCallback(() => {
+    if (tiaRuntimeRef.current.emergencyStop) {
+      showToast('Paro de Emergencia (D1) activo — libera PE y rearma primero', 'error');
+      return;
+    }
+    if (simStateRef.current.mode !== 'running') {
+      handleStartSimulation();
+    }
+    setTiaRuntime(prev => {
+      const updated: TiaRuntimeState = { ...prev, stepPulse: true };
+      tiaRuntimeRef.current = updated;
+      return updated;
+    });
+    soundEffects.playTripClick();
+  }, [handleStartSimulation, showToast]);
+
+  const handleStopPlant = useCallback(() => {
+    const initSteps = tiaProgramRef.current.grafcetSteps.filter(s => s.isInitial).map(s => s.id);
+    setTiaRuntime(prev => {
+      const clearedOutputs: Record<string, boolean> = {};
+      for (const k of Object.keys(prev.outputs)) {
+        clearedOutputs[k] = k === '%Q8.4' ? prev.emergencyStop : false;
+      }
+      const clearedMem: Record<string, boolean> = { ...prev.memory, '%M0.0': false };
+      const clearedForced: Record<string, boolean> = { ...prev.forcedInputs, '%I0.0': false };
+      plcOutputsRef.current = clearedOutputs;
+      plcInputsRef.current = { ...plcInputsRef.current, '%I0.0': false, '%I0.1': true };
+      const updated: TiaRuntimeState = {
+        ...prev,
+        outputs: clearedOutputs,
+        memory: clearedMem,
+        forcedInputs: clearedForced,
+        activeSteps: initSteps.length > 0 ? initSteps : [0],
+        gemmaStateCode: prev.emergencyStop ? 'D1' : 'A1'
+      };
+      tiaRuntimeRef.current = updated;
+      return updated;
+    });
+    setTimeout(() => {
+      plcInputsRef.current = { ...plcInputsRef.current, '%I0.1': false };
+    }, 350);
   }, []);
 
   const handleToggleBreaker = useCallback(
@@ -1349,6 +1499,11 @@ export const App: React.FC = () => {
               simulationMode={simulationState.mode}
               onChangeProgram={next => setTiaProgram(next)}
               onToggleForceInput={handleToggleForceInput}
+              onSetGemmaMode={handleSetGemmaMode}
+              onToggleEmergencyStop={handleToggleEmergencyStop}
+              onTriggerRearm={handleTriggerRearm}
+              onTriggerCyclePulse={handleTriggerCyclePulse}
+              onTriggerStepPulse={handleTriggerStepPulse}
               onShowToast={showToast}
             />
           </div>
@@ -1363,6 +1518,15 @@ export const App: React.FC = () => {
               document={doc}
               onPressButton={handleTwinPressButton}
               onLoadExample={handleLoadExample}
+              gemmaMode={tiaRuntime.gemmaMode}
+              emergencyStop={tiaRuntime.emergencyStop}
+              gemmaStateCode={tiaRuntime.gemmaStateCode}
+              onSetGemmaMode={handleSetGemmaMode}
+              onToggleEmergencyStop={handleToggleEmergencyStop}
+              onTriggerRearm={handleTriggerRearm}
+              onTriggerCyclePulse={handleTriggerCyclePulse}
+              onTriggerStepPulse={handleTriggerStepPulse}
+              onStopPlant={handleStopPlant}
               onClose={() => setActiveView('cad')}
             />
           </div>

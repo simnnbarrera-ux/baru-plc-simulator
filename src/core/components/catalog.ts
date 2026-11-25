@@ -748,6 +748,16 @@ export const COMPONENT_CATALOG: ComponentDefinition[] = [
       { id: 'Y2_A1', label: 'Y2+', relX: 5, relY: 0, type: 'coil' },
       { id: 'Y2_A2', label: 'Y2-', relX: 5, relY: 3, type: 'coil' }
     ]
+  },
+  {
+    type: 'cad_text',
+    name: 'Texto / Etiqueta de Zona CAD',
+    category: 'grafcet',
+    width: 6,
+    height: 1,
+    defaultTag: 'ZONA',
+    description: 'Anotación de texto o rótulo técnico del esquema (GEMMA, secciones, comentarios)',
+    pins: []
   }
 ];
 
