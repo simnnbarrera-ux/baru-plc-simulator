@@ -139,6 +139,11 @@ Desde el botón **Exportar / Importar** ([`UnifiedExportModal.tsx`](file:///C:/U
   * Se muestra automáticamente cuando el visitante entra por primera vez o tiene la sesión cerrada (excepto en enlaces públicos `?share=`).
   * Incluye emblema Hero de gran formato (`BrandLogo size="hero"`), escena interactiva **Three.js 3D** centrada con PLC S7-1200, pantalla OLED viva, cilindro neumático doble efecto animado, válvula 5/2 con mangueras, torreta GEMMA 3 colores y órbita 360°.
   * Secciones de objetivo, Bento Grid de funcionalidades, comparativa **Invitado vs. Cuenta Gratuita** y apartado dedicado de **Autores del Proyecto**: **Simón Barrera Ruíz** (Estudiante de Ingeniería Mecatrónica) y **Juan Carlos Mena Moreno** (Director de Ingeniería Electrónica y Telecomunicaciones).
+* **Rutas SPA Propias por Pantalla ([`routes.ts`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/core/routing/routes.ts) + [`vercel.json`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/vercel.json)):** Cada pantalla, pestaña y modo tiene su propia URL real en el navegador con soporte de recarga F5, enlaces profundos y botones Atrás/Adelante (`popstate`):
+  * Landing & Auth: `/`, `/login`, `/registro`
+  * Espacio autenticado: `/studio/cad`, `/studio/tia/lad`, `/studio/tia/scl`, `/studio/tia/grafcet`, `/studio/planta/cinta`, `/studio/planta/tanque`, `/studio/planta/neumatica`, `/studio/planta/embotelladora`, `/studio/proyectos`, `/studio/examenes`, `/studio/importar`, `/studio/exportar`, `/studio/fallas`, `/studio/reporte`
+  * Modo Invitado: `/invitado/cad`, `/invitado/tia/lad|scl|grafcet`, `/invitado/planta/cinta|tanque|neumatica|embotelladora`, `/invitado/fallas`, `/invitado/reporte`
+  * Proyectos públicos compartidos: `/compartido/<slug>` (compatible también con enlaces legados `?share=<slug>`).
 * **Modo Invitado con Restricciones vs. Cuenta Autenticada:**
   * El botón **Entrar como invitado** permite simular de inmediato (`Esquema CAD`, `Código TIA`, `Planta 2D`, 8 ejemplos, multímetro Fluke y Consola GEMMA), bloqueando **Guardar en la nube**, **Importar** y **Exportar** hasta iniciar sesión o crear una cuenta gratuita.
 * **Esquema SQL Idempotente ([`supabase/migrations/001_initial_schema.sql`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/supabase/migrations/001_initial_schema.sql)):**

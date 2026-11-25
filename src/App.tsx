@@ -35,7 +35,12 @@ import { SchematicCanvas, SchematicCanvasRef } from './components/canvas/Schemat
 import { ComponentEditModal } from './components/dialogs/ComponentEditModal';
 import { UnifiedExportModal, ExportModalTab } from './components/dialogs/UnifiedExportModal';
 import { AboutModal } from './components/dialogs/AboutModal';
-import { DigitalTwinPlant } from './components/plant/DigitalTwinPlant';
+import { DigitalTwinPlant, PlantMode } from './components/plant/DigitalTwinPlant';
+import {
+  buildBrowserPath,
+  getRouteTitle,
+  parseBrowserLocation
+} from './core/routing/routes';
 import { TimingDiagram } from './components/tools/TimingDiagram';
 import { VirtualMultimeter } from './components/tools/VirtualMultimeter';
 import { LabReportModal } from './components/dialogs/LabReportModal';
@@ -97,9 +102,18 @@ export const App: React.FC = () => {
     setOnboardingStep
   } = useAuth();
 
+  // Lectura inicial de la ruta del navegador (soporta deep links y recargas F5 en cualquier /)
+  const initialRoute = useMemo(
+    () => parseBrowserLocation(window.location.pathname, window.location.search),
+    []
+  );
+
   // Documento esquemático + Programa TIA S7-1200 unificados
   const [doc, setDoc] = useState<CircuitDocument>(PLC_S71200_STARTER_CIRCUIT);
-  const [tiaProgram, setTiaProgram] = useState<TiaProgramDocument>(DEFAULT_TIA_PROGRAM);
+  const [tiaProgram, setTiaProgram] = useState<TiaProgramDocument>(() => ({
+    ...DEFAULT_TIA_PROGRAM,
+    activeLanguage: initialRoute.tiaLang ?? DEFAULT_TIA_PROGRAM.activeLanguage
+  }));
   const [tiaRuntime, setTiaRuntime] = useState<TiaRuntimeState>(() =>
     createInitialRuntime(DEFAULT_TIA_PROGRAM)
   );
@@ -115,25 +129,39 @@ export const App: React.FC = () => {
   const [isCloningShared, setIsCloningShared] = useState<boolean>(false);
 
   // Modales Cloud / Auth / Onboarding / Landing
-  const [enteredGuestWorkspace, setEnteredGuestWorkspace] = useState<boolean>(false);
-  const hasShareParam = useMemo(
-    () => Boolean(new URLSearchParams(window.location.search).get('share')?.trim()),
-    []
+  const [enteredGuestWorkspace, setEnteredGuestWorkspace] = useState<boolean>(
+    () => initialRoute.scope === 'invitado' || initialRoute.scope === 'studio'
   );
+  const [activeShareSlug, setActiveShareSlug] = useState<string | null>(
+    () => initialRoute.shareSlug ?? null
+  );
+  const hasShareParam = Boolean(activeShareSlug);
   const [authModalState, setAuthModalState] = useState<{
     open: boolean;
     mode: AuthModalMode;
     reason?: string | null;
-  }>({ open: false, mode: 'login', reason: null });
-  const [projectsModalTab, setProjectsModalTab] = useState<ProjectsModalTab | null>(null);
+  }>({
+    open: Boolean(initialRoute.authModal),
+    mode: initialRoute.authModal || 'login',
+    reason: null
+  });
+  const [projectsModalTab, setProjectsModalTab] = useState<ProjectsModalTab | null>(
+    initialRoute.projectsModal ?? null
+  );
   const [isWizardOpen, setIsWizardOpen] = useState<boolean>(false);
   const [wizardInitialStep, setWizardInitialStep] = useState<number>(1);
   const wizardAutoTriggeredUserRef = useRef<string | null>(null);
   const guestWizardTriggeredRef = useRef<boolean>(false);
   const isHydratingCloudRef = useRef<boolean>(false);
+  const isPopStateNavRef = useRef<boolean>(false);
+  const hasSyncedInitialPathRef = useRef<boolean>(false);
+  const pendingDeepExportRef = useRef<ExportModalTab | null>(initialRoute.exportModal ?? null);
 
-  // Vista estilo Tinkercad
-  const [activeView, setActiveView] = useState<WorkspaceView>('cad');
+  // Vista estilo Tinkercad + sub-planta activa (sincronizada con la URL)
+  const [activeView, setActiveView] = useState<WorkspaceView>(initialRoute.view);
+  const [activePlantMode, setActivePlantMode] = useState<PlantMode>(
+    initialRoute.plantMode ?? 'conveyor'
+  );
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(true);
 
   // Historial Deshacer / Rehacer
@@ -182,8 +210,8 @@ export const App: React.FC = () => {
     x: number;
     y: number;
   } | null>(null);
-  const [isReportOpen, setIsReportOpen] = useState<boolean>(false);
-  const [isFaultsOpen, setIsFaultsOpen] = useState<boolean>(false);
+  const [isReportOpen, setIsReportOpen] = useState<boolean>(Boolean(initialRoute.reportOpen));
+  const [isFaultsOpen, setIsFaultsOpen] = useState<boolean>(Boolean(initialRoute.faultsOpen));
 
   // Sistema de inyección de fallas y examen
   const [activeFaults, setActiveFaults] = useState<Set<string>>(new Set());
@@ -325,11 +353,10 @@ export const App: React.FC = () => {
   }, [authLoading, user, profile, enteredGuestWorkspace, hasShareParam, completeOnboarding, skipOnboarding]);
 
   // --------------------------------------------------------------------------
-  // Carga de Proyecto Compartido Público vía URL (?share=<slug>)
+  // Carga de Proyecto Compartido Público vía URL (/compartido/<slug> o ?share=<slug>)
   // --------------------------------------------------------------------------
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const slug = params.get('share')?.trim();
+    const slug = activeShareSlug;
     if (!slug) return;
 
     let cancelled = false;
@@ -360,7 +387,135 @@ export const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [showToast]);
+  }, [activeShareSlug, showToast]);
+
+  // --------------------------------------------------------------------------
+  // Sincronización Bidireccional de Rutas del Navegador (History API + popstate)
+  // --------------------------------------------------------------------------
+  useEffect(() => {
+    if (authLoading) return;
+
+    // Resolver deep-link inicial a /studio/importar o /studio/exportar tras hidratar sesión
+    if (pendingDeepExportRef.current) {
+      const requestedTab = pendingDeepExportRef.current;
+      pendingDeepExportRef.current = null;
+      if (user) {
+        setExportModalTab(requestedTab);
+      } else {
+        setAuthModalState({
+          open: true,
+          mode: 'signup',
+          reason:
+            requestedTab === 'import'
+              ? 'Modo Invitado: inicia sesión o crea una cuenta gratuita para importar proyectos.'
+              : 'Modo Invitado: inicia sesión o crea una cuenta gratuita para exportar proyectos.'
+        });
+      }
+    }
+
+    const routeState = {
+      isAuthenticated: Boolean(user),
+      enteredGuestWorkspace,
+      sharedSlug: sharedBanner?.slug || activeShareSlug,
+      activeView,
+      tiaLanguage: tiaProgram.activeLanguage,
+      plantMode: activePlantMode,
+      authModalOpen: authModalState.open,
+      authModalMode: authModalState.mode,
+      projectsModalTab,
+      exportModalTab,
+      isFaultsOpen,
+      isReportOpen
+    };
+
+    const targetPath = buildBrowserPath(routeState);
+    document.title = getRouteTitle(routeState);
+
+    // No pisar tokens de confirmación/OAuth en hash antes de que Supabase termine
+    const hasAuthHashToken = /access_token=|refresh_token=|type=signup|type=recovery/i.test(
+      window.location.hash
+    );
+    if (hasAuthHashToken) return;
+
+    const currentPath = window.location.pathname;
+    const hasLegacyShareQuery = window.location.search.includes('share=');
+
+    if (currentPath !== targetPath || (hasLegacyShareQuery && targetPath.startsWith('/compartido/'))) {
+      const nextUrl =
+        targetPath === '/' && currentPath === '/' && window.location.hash
+          ? `${targetPath}${window.location.hash}`
+          : targetPath;
+      if (!hasSyncedInitialPathRef.current || isPopStateNavRef.current) {
+        window.history.replaceState(null, '', nextUrl);
+      } else {
+        window.history.pushState(null, '', nextUrl);
+      }
+    }
+
+    hasSyncedInitialPathRef.current = true;
+    isPopStateNavRef.current = false;
+  }, [
+    authLoading,
+    user,
+    enteredGuestWorkspace,
+    sharedBanner?.slug,
+    activeShareSlug,
+    activeView,
+    tiaProgram.activeLanguage,
+    activePlantMode,
+    authModalState.open,
+    authModalState.mode,
+    projectsModalTab,
+    exportModalTab,
+    isFaultsOpen,
+    isReportOpen
+  ]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const parsed = parseBrowserLocation(window.location.pathname, window.location.search);
+      isPopStateNavRef.current = true;
+
+      if (parsed.scope === 'landing') {
+        if (!user) {
+          setEnteredGuestWorkspace(false);
+        }
+        setProjectsModalTab(null);
+        setExportModalTab(null);
+        setIsFaultsOpen(false);
+        setIsReportOpen(false);
+        setAuthModalState(prev =>
+          parsed.authModal
+            ? { open: true, mode: parsed.authModal, reason: null }
+            : { ...prev, open: false }
+        );
+        return;
+      }
+
+      if (parsed.scope === 'invitado' || parsed.scope === 'studio') {
+        if (!user) {
+          setEnteredGuestWorkspace(true);
+        }
+        setActiveView(parsed.view);
+        if (parsed.tiaLang) {
+          setTiaProgram(prev =>
+            prev.activeLanguage === parsed.tiaLang ? prev : { ...prev, activeLanguage: parsed.tiaLang! }
+          );
+        }
+        if (parsed.plantMode) {
+          setActivePlantMode(parsed.plantMode);
+        }
+        setAuthModalState(prev => ({ ...prev, open: false }));
+        setProjectsModalTab(parsed.projectsModal ?? null);
+        setExportModalTab(user ? parsed.exportModal ?? null : null);
+        setIsFaultsOpen(Boolean(parsed.faultsOpen));
+        setIsReportOpen(Boolean(parsed.reportOpen));
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [user]);
 
   // --------------------------------------------------------------------------
   // Guardado Manual y Autoguardado DB-First en Supabase
@@ -508,7 +663,7 @@ export const App: React.FC = () => {
 
   const handleCopyShareLink = useCallback(
     (slug: string) => {
-      const shareUrl = `${window.location.origin}${window.location.pathname}?share=${slug}`;
+      const shareUrl = `${window.location.origin}/compartido/${encodeURIComponent(slug)}`;
       if (navigator.clipboard?.writeText) {
         navigator.clipboard.writeText(shareUrl).then(
           () => showToast('Enlace público copiado al portapapeles', 'success'),
@@ -534,18 +689,14 @@ export const App: React.FC = () => {
     const saved = await performCloudSave({ forceNew: true });
     setIsCloningShared(false);
     if (saved) {
-      const url = new URL(window.location.href);
-      url.searchParams.delete('share');
-      window.history.replaceState({}, '', url.toString());
       setSharedBanner(null);
+      setActiveShareSlug(null);
     }
   }, [user, performCloudSave]);
 
   const handleDismissSharedBanner = useCallback(() => {
-    const url = new URL(window.location.href);
-    url.searchParams.delete('share');
-    window.history.replaceState({}, '', url.toString());
     setSharedBanner(null);
+    setActiveShareSlug(null);
   }, []);
 
   // --------------------------------------------------------------------------
@@ -1153,6 +1304,7 @@ export const App: React.FC = () => {
       setTiaRuntime(createInitialRuntime(preset.tiaProgram));
       setSelectedComponent(null);
       setSelectedWire(null);
+      setActivePlantMode(preset.plantMode);
       setActiveView('cad');
       showToast(`Cargado: ${preset.label} (CAD + LAD + SCL + GRAFCET)`, 'info');
       setTimeout(() => canvasRef.current?.fitToScreen(), 150);
@@ -1616,6 +1768,8 @@ export const App: React.FC = () => {
               onTriggerCyclePulse={handleTriggerCyclePulse}
               onTriggerStepPulse={handleTriggerStepPulse}
               onStopPlant={handleStopPlant}
+              controlledPlantMode={activePlantMode}
+              onPlantModeChange={setActivePlantMode}
               onClose={() => setActiveView('cad')}
             />
           </div>

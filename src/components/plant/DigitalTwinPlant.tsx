@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 
 type GemmaMode = 'AU' | 'CL' | 'ET' | 'MAN';
-type PlantMode = 'conveyor' | 'tank' | 'pneumatic' | 'bottling';
+export type PlantMode = 'conveyor' | 'tank' | 'pneumatic' | 'bottling';
 type LocalPneumaticPhase = 'idle' | 'extending' | 'dwell_end' | 'retracting' | 'dwell_start';
 type BottlingStage =
   | 'E0'
@@ -85,6 +85,8 @@ interface Props {
   onTriggerCyclePulse?: () => void;
   onTriggerStepPulse?: () => void;
   onStopPlant?: () => void;
+  controlledPlantMode?: PlantMode;
+  onPlantModeChange?: (mode: PlantMode) => void;
 }
 
 const createInitialBottlingState = (): BottlingState => ({
@@ -144,10 +146,26 @@ export const DigitalTwinPlant: React.FC<Props> = ({
   onTriggerRearm,
   onTriggerCyclePulse,
   onTriggerStepPulse,
-  onStopPlant
+  onStopPlant,
+  controlledPlantMode,
+  onPlantModeChange
 }) => {
-  const [plantMode, setPlantMode] = useState<PlantMode>('conveyor');
+  const [plantMode, setPlantMode] = useState<PlantMode>(controlledPlantMode ?? 'conveyor');
   const [isMinimized, setIsMinimized] = useState<boolean>(false);
+
+  const selectPlantMode = useCallback(
+    (next: PlantMode) => {
+      setPlantMode(next);
+      onPlantModeChange?.(next);
+    },
+    [onPlantModeChange]
+  );
+
+  useEffect(() => {
+    if (controlledPlantMode) {
+      setPlantMode(controlledPlantMode);
+    }
+  }, [controlledPlantMode]);
 
   // Estado GEMMA local (fallback cuando no se pasan props externos)
   const [localGemmaMode, setLocalGemmaMode] = useState<GemmaMode>('AU');
@@ -219,18 +237,23 @@ export const DigitalTwinPlant: React.FC<Props> = ({
 
   // Auto-selección inteligente del modo de planta cuando cambia el circuito cargado
   const docTitle = document?.titleBlock?.title || '';
+  const prevDocTitleRef = useRef<string>(docTitle);
   const docHasCylinder = Boolean(
     document?.components.some(c => c.type === 'pneumatic_cylinder_da')
   );
 
   useEffect(() => {
     if (!document) return;
+    if (controlledPlantMode && prevDocTitleRef.current === docTitle) {
+      return;
+    }
+    prevDocTitleRef.current = docTitle;
     const titleLower = docTitle.toLowerCase();
 
     if (titleLower.includes('embotell')) {
-      setPlantMode('bottling');
+      selectPlantMode('bottling');
     } else if (titleLower.includes('tanque') || titleLower.includes('bomba')) {
-      setPlantMode('tank');
+      selectPlantMode('tank');
     } else if (
       titleLower.includes('neum') ||
       titleLower.includes('pist') ||
@@ -239,11 +262,11 @@ export const DigitalTwinPlant: React.FC<Props> = ({
         !titleLower.includes('banda') &&
         !titleLower.includes('embotell'))
     ) {
-      setPlantMode('pneumatic');
+      selectPlantMode('pneumatic');
     } else {
-      setPlantMode('conveyor');
+      selectPlantMode('conveyor');
     }
-  }, [document, docTitle, docHasCylinder]);
+  }, [document, docTitle, docHasCylinder, controlledPlantMode, selectPlantMode]);
 
   // Limpieza de temporizadores de pulsadores al desmontar
   useEffect(() => {
@@ -1543,7 +1566,7 @@ export const DigitalTwinPlant: React.FC<Props> = ({
               {modeButtons.map(m => (
                 <button
                   key={m.id}
-                  onClick={() => setPlantMode(m.id)}
+                  onClick={() => selectPlantMode(m.id)}
                   className={`px-2 py-0.5 rounded-md transition-colors cursor-pointer ${
                     plantMode === m.id
                       ? 'bg-sky-500 text-white shadow-xs'
