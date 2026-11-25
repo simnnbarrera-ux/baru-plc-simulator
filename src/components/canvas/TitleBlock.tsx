@@ -21,6 +21,9 @@ export const TitleBlock: React.FC<Props> = ({
   const x = sheetWidth - width - 20;
   const y = sheetHeight - height - 20;
 
+  const truncate = (text: string, max: number) =>
+    text && text.length > max ? `${text.slice(0, max - 1)}…` : (text || '');
+
   return (
     <g
       transform={`translate(${x}, ${y})`}
@@ -53,15 +56,15 @@ export const TitleBlock: React.FC<Props> = ({
       <text x={12} y={46} className="text-[10px] font-mono font-semibold fill-slate-400">
         TÍTULO:
       </text>
-      <text x={12} y={62} className="text-xs font-bold fill-slate-900 font-sans">
-        {data.title}
+      <text x={12} y={62} className="text-[11px] font-bold fill-slate-900 font-sans">
+        {truncate(data.title, 24)}
       </text>
 
       <text x={190} y={46} className="text-[10px] font-mono font-semibold fill-slate-400">
         PROYECTO:
       </text>
-      <text x={190} y={62} className="text-xs font-semibold fill-slate-800 font-sans">
-        {data.project}
+      <text x={190} y={62} className="text-[11px] font-semibold fill-slate-800 font-sans">
+        {truncate(data.project, 24)}
       </text>
 
       {/* Detalles: Fecha, Autor, Hoja */}

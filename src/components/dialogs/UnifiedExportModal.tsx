@@ -34,7 +34,7 @@ interface Props {
   document: CircuitDocument;
   tiaProgram: TiaProgramDocument;
   onClose: () => void;
-  onImportCircuit: (doc: CircuitDocument) => void;
+  onImportCircuit: (doc: CircuitDocument, extractedTia?: TiaProgramDocument | null) => void;
   onImportTiaProgram: (prog: TiaProgramDocument) => void;
   onShowToast?: (msg: string, type?: 'success' | 'error' | 'info') => void;
 }
@@ -203,8 +203,14 @@ export const UnifiedExportModal: React.FC<Props> = ({
 
       // 4. Archivo CADe_SIMU (.cad)
       const circuit = CadParser.parse(trimmed);
-      onImportCircuit(circuit);
-      onShowToast?.(`Esquema CADe_SIMU importado (${circuit.components.length} componentes)`, 'success');
+      const extractedTia = CadParser.extractTiaProgram(circuit);
+      onImportCircuit(circuit, extractedTia);
+      onShowToast?.(
+        extractedTia
+          ? `CADe_SIMU importado (${circuit.components.length} comp. + lógica ${extractedTia.activeLanguage}/SCL sincronizada)`
+          : `Esquema CADe_SIMU importado (${circuit.components.length} componentes, ${circuit.wires.length} cables)`,
+        'success'
+      );
       onClose();
     } catch (err: any) {
       setImportError(err?.message || 'Formato no reconocido. Usa archivos .cad, .scl, .xml o .json.');
@@ -220,7 +226,8 @@ export const UnifiedExportModal: React.FC<Props> = ({
       setRawText(text);
       processImportedText(text, file.name);
     };
-    reader.readAsText(file);
+    const isCadFile = file.name.toLowerCase().endsWith('.cad');
+    reader.readAsText(file, isCadFile ? 'ISO-8859-1' : 'UTF-8');
   };
 
   return (

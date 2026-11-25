@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { SimulationMode } from '../../types/simulation';
 import { CloudSyncStatus } from '../../types/cloud';
+import { EXAMPLE_PRESETS } from '../../core/examples';
 import { BrandLogo } from '../common/BrandLogo';
 
 export type WorkspaceView = 'cad' | 'tia' | 'plant';
@@ -115,16 +116,6 @@ export const TinkerHeader: React.FC<Props> = ({
 
   const isRunning = simulationMode === 'running' || simulationMode === 'paused';
 
-  const examplesList = [
-    { id: 'plc_s71200', label: 'PLC S7-1200 + Motor Trifásico', badge: 'TIA + CAD' },
-    { id: 'pneumatic_plc', label: 'Electroneumática A+ A- con S7-1200', badge: 'NEUMÁTICA' },
-    { id: 'direct', label: 'Arranque Directo Trifásico', badge: 'POTENCIA' },
-    { id: 'star_delta', label: 'Estrella - Triángulo (Y-Δ)', badge: 'POTENCIA' },
-    { id: 'reverse', label: 'Inversión de Giro 3~', badge: 'POTENCIA' },
-    { id: 'conveyor', label: 'Cinta Transportadora + Planta 2D', badge: 'PLANTA 2D' },
-    { id: 'water_tank', label: 'Bomba Tanque Nivel Automático', badge: 'PLANTA 2D' }
-  ];
-
   const userInitial = (userDisplayName || userEmail || 'U').trim().charAt(0).toUpperCase();
 
   return (
@@ -173,25 +164,48 @@ export const TinkerHeader: React.FC<Props> = ({
           </button>
 
           {openMenu === 'examples' && (
-            <div className="absolute left-0 top-full mt-1.5 w-80 bg-white rounded-xl shadow-xl border border-slate-200 p-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
-              <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Circuitos & Prácticas Listas
+            <div className="absolute left-0 top-full mt-1.5 w-[26rem] max-h-[75vh] overflow-y-auto bg-white rounded-2xl shadow-xl border border-slate-200 p-2 z-50 animate-in fade-in zoom-in-95 duration-150">
+              <div className="px-2.5 py-1.5 flex items-center justify-between border-b border-slate-100 mb-1">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                  Ruta de Complejidad (Nivel 1 → 8)
+                </span>
+                <span className="text-[10px] font-semibold text-emerald-600">
+                  CAD + LAD + SCL + GRAFCET
+                </span>
               </div>
-              {examplesList.map((ex) => (
-                <button
-                  key={ex.id}
-                  onClick={() => {
-                    onLoadExample(ex.id);
-                    setOpenMenu(null);
-                  }}
-                  className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left text-xs font-medium text-slate-700 hover:bg-sky-50 hover:text-sky-700 transition-colors cursor-pointer"
-                >
-                  <span className="truncate">{ex.label}</span>
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 shrink-0">
-                    {ex.badge}
-                  </span>
-                </button>
-              ))}
+              {EXAMPLE_PRESETS.map((ex) => {
+                const isFinalProject = ex.level >= 7;
+                return (
+                  <button
+                    key={ex.id}
+                    onClick={() => {
+                      onLoadExample(ex.id);
+                      setOpenMenu(null);
+                    }}
+                    className={`w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-xl text-left transition-colors cursor-pointer ${
+                      isFinalProject
+                        ? 'hover:bg-emerald-50/80 border border-transparent hover:border-emerald-200'
+                        : 'hover:bg-sky-50'
+                    }`}
+                  >
+                    <div className="w-full flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-slate-800 truncate">{ex.label}</span>
+                      <span
+                        className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-full shrink-0 ${
+                          isFinalProject
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : ex.level >= 5
+                              ? 'bg-sky-100 text-sky-800'
+                              : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {ex.badge}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-500 truncate">{ex.description}</span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

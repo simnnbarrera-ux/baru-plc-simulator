@@ -1,6 +1,14 @@
-import React, { useState } from 'react';
-import { SimulationState } from '../../types/simulation';
-import { Gauge, X, Zap, Volume2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ElectricalMeasurement, SimulationState } from '../../types/simulation';
+import {
+  AlertTriangle,
+  Crosshair,
+  Play,
+  Volume2,
+  VolumeX,
+  X,
+  Zap
+} from 'lucide-react';
 import { soundEffects } from '../../core/simulation/soundEffects';
 
 interface Props {
@@ -8,358 +16,438 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   activeFaults?: Set<string>;
+  measurement: ElectricalMeasurement | null;
+  isProbeActive: boolean;
+  onToggleProbe: () => void;
+  onStartSimulation?: () => void;
 }
+
+const getPotentialBadgeStyle = (potential: string, isEnergized: boolean): string => {
+  if (potential === '+24V') {
+    return 'bg-rose-500/20 text-rose-300 border-rose-400/50';
+  }
+  if (potential.startsWith('L1') || potential === 'L1-L2-L3') {
+    return 'bg-amber-500/20 text-amber-300 border-amber-400/50';
+  }
+  if (potential.startsWith('L2')) {
+    return 'bg-orange-500/20 text-orange-300 border-orange-400/50';
+  }
+  if (potential.startsWith('L3')) {
+    return 'bg-yellow-500/20 text-yellow-200 border-yellow-400/50';
+  }
+  if (potential === 'N' || potential === '0V') {
+    return 'bg-sky-500/20 text-sky-300 border-sky-400/40';
+  }
+  if (potential === 'PE') {
+    return 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40';
+  }
+  if (potential === 'Neumático') {
+    return 'bg-cyan-500/20 text-cyan-300 border-cyan-400/40';
+  }
+  return isEnergized
+    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40'
+    : 'bg-slate-800 text-slate-400 border-slate-700';
+};
+
+const getTargetTypeBadge = (targetType: ElectricalMeasurement['targetType']): string => {
+  if (targetType === 'wire') return 'CABLE';
+  if (targetType === 'pin') return 'BORNE';
+  return 'COMP.';
+};
+
+const formatPower = (powerW: number): { value: string; unit: string } => {
+  if (powerW >= 1000) {
+    return { value: (powerW / 1000).toFixed(2), unit: 'kW' };
+  }
+  return { value: powerW.toFixed(1), unit: 'W' };
+};
 
 export const VirtualMultimeter: React.FC<Props> = ({
   simulationState,
   isOpen,
   onClose,
-  activeFaults = new Set()
+  activeFaults = new Set(),
+  measurement,
+  isProbeActive,
+  onToggleProbe,
+  onStartSimulation
 }) => {
-  const [selectedChannel, setSelectedChannel] = useState<
-    'voltage_ll' | 'voltage_ln' | 'current' | 'resistance' | 'coil_v' | 'power'
-  >('voltage_ll');
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const lastProbedRef = useRef<string | null>(null);
 
-  const [phasePair, setPhasePair] = useState<'L1_L2' | 'L2_L3' | 'L1_L3'>('L1_L2');
-  const [resistancePoint, setResistancePoint] = useState<'coil_km1' | 'thermal_95_96' | 'breaker_q1' | 'km1_contacts' | 'km1_aux_13_14'>('coil_km1');
+  const isRunning = simulationState.mode === 'running';
+  const isStopped = simulationState.mode === 'stopped';
+
+  // Feedback sonoro realista estilo Fluke al tocar un punto nuevo del esquema
+  useEffect(() => {
+    if (!isOpen || !measurement) {
+      lastProbedRef.current = null;
+      return;
+    }
+    if (lastProbedRef.current !== measurement.targetId) {
+      lastProbedRef.current = measurement.targetId;
+      if (soundEnabled) {
+        if (!isStopped && measurement.currentA > 12) {
+          soundEffects.playContinuityBeep(160);
+        } else if (!isStopped && measurement.isEnergized) {
+          soundEffects.playContinuityBeep(70);
+        } else {
+          soundEffects.playTripClick();
+        }
+      }
+    }
+  }, [isOpen, measurement, soundEnabled, isStopped]);
 
   if (!isOpen) return null;
 
-  const isSimulating = simulationState.mode === 'running';
-  const isKm1Active = simulationState.activeCoils.has('-KM1');
+  // Lecturas efectivas en pantalla (forzar 0 cuando la simulación está detenida)
+  const hasReading = measurement !== null;
+  const voltageV = !hasReading || isStopped ? 0 : measurement.voltageV;
+  const voltageMode = measurement?.voltageMode ?? 'AC';
+  const currentA = !hasReading || isStopped ? 0 : measurement.currentA;
+  const powerW = !hasReading || isStopped ? 0 : measurement.powerW;
+  const isEnergized = !isStopped && Boolean(measurement?.isEnergized);
+  const isOverload = !isStopped && currentA > 12;
 
-  // Evaluar presencia de fallas
-  const hasPhaseLossL1 = activeFaults.has('phase_loss_l1') || activeFaults.has('corte_fase_l1');
-  const hasPhaseLossL2 = activeFaults.has('phase_loss_l2') || activeFaults.has('corte_fase_l2') || activeFaults.has('fase_cortada');
-  const hasPhaseLossL3 = activeFaults.has('phase_loss_l3') || activeFaults.has('corte_fase_l3');
-  const hasThermalTrip = activeFaults.has('thermal_overload');
-  const hasOpenCoil = activeFaults.has('open_coil_km1') || activeFaults.has('bobina_abierta');
-  const hasShortCircuit = activeFaults.has('short_circuit');
-  const hasWeldedContact = activeFaults.has('welded_contact_km1') || activeFaults.has('contacto_soldado');
+  const voltageUnit = voltageV > 0 ? `V ${voltageMode}` : 'V';
+  const powerFmt = formatPower(powerW);
+  const freqLabel = !hasReading
+    ? '---'
+    : isStopped
+      ? '0.0 Hz'
+      : voltageMode === 'DC'
+        ? 'DC'
+        : `${measurement.frequencyHz.toFixed(1)} Hz`;
 
-  // Cálculos de Tensión Línea - Línea (400V)
-  let voltageLL = 0.0;
-  if (isSimulating && !hasShortCircuit) {
-    if (phasePair === 'L1_L2') {
-      voltageLL = hasPhaseLossL2 ? 0.0 : 400.2;
-    } else if (phasePair === 'L2_L3') {
-      voltageLL = (hasPhaseLossL2 || hasPhaseLossL3) ? 0.0 : 400.1;
-    } else if (phasePair === 'L1_L3') {
-      voltageLL = hasPhaseLossL3 ? 0.0 : 399.8;
-    }
-  }
+  const statusNote = !hasReading
+    ? 'Esperando contacto de sonda...'
+    : isStopped
+      ? 'Circuito desenergizado (simulación detenida)'
+      : measurement.statusNote;
 
-  // Cálculos de Tensión Línea - Neutro (230V)
-  let voltageLN = 0.0;
-  if (isSimulating && !hasShortCircuit) {
-    voltageLN = 230.8;
-  }
+  const isFaultNote =
+    isOverload ||
+    /falla|sobrecarga|sobrecorriente|cortocircuito|disparado|error|abierta|soldado/i.test(statusNote);
 
-  // Tensión directa en bornas A1-A2 de la bobina -KM1
-  // Si la maniobra está en marcha (sin térmico disparado), hay 230V aunque la bobina esté abierta internamente!
-  let coilVoltage = 0.0;
-  if (isSimulating && !hasThermalTrip && !hasShortCircuit) {
-    coilVoltage = 230.0;
-  }
-
-  // Corriente de motor (Pinza Amperimétrica)
-  let currentMotor = 0.0;
-  if (isSimulating && isKm1Active) {
-    if (hasPhaseLossL2 || hasPhaseLossL3) {
-      // Sobreintensidad por régimen bifásico asimétrico en motor trifásico
-      currentMotor = 18.65;
-    } else {
-      currentMotor = 7.42;
-    }
-  }
-
-  // Potencia activa en kW
-  const activePowerKW = (isSimulating && isKm1Active && !hasPhaseLossL2 && !hasPhaseLossL3)
-    ? (Math.sqrt(3) * 400 * 7.42 * 0.85 / 1000).toFixed(2)
-    : "0.00";
-
-  // Medición de Resistencia Ω / Continuidad (con circuito sin tensión para prueba de taller)
-  let resistanceDisplay = "560.0";
-  let isResistanceOL = false;
-
-  if (resistancePoint === 'coil_km1') {
-    if (hasOpenCoil) {
-      resistanceDisplay = " O.L ";
-      isResistanceOL = true;
-    } else {
-      resistanceDisplay = "562.4";
-    }
-  } else if (resistancePoint === 'thermal_95_96') {
-    if (hasThermalTrip) {
-      resistanceDisplay = " O.L ";
-      isResistanceOL = true;
-    } else {
-      resistanceDisplay = "000.2";
-    }
-  } else if (resistancePoint === 'breaker_q1') {
-    if (hasShortCircuit) {
-      resistanceDisplay = " O.L ";
-      isResistanceOL = true;
-    } else {
-      resistanceDisplay = "000.1";
-    }
-  } else if (resistancePoint === 'km1_contacts') {
-    if (hasWeldedContact) {
-      resistanceDisplay = "000.1";
-      isResistanceOL = false;
-    } else {
-      resistanceDisplay = " O.L ";
-      isResistanceOL = true;
-    }
-  } else if (resistancePoint === 'km1_aux_13_14') {
-    if (hasWeldedContact) {
-      resistanceDisplay = "000.1";
-      isResistanceOL = false;
-    } else {
-      resistanceDisplay = " O.L ";
-      isResistanceOL = true;
-    }
-  }
-
-  // Pitido de continuidad al tocar bornas si no está abierto
-  const handleTriggerBeep = () => {
-    if (!isResistanceOL) {
-      soundEffects.playContinuityBeep(200);
-    }
-  };
+  // Porcentaje para barra analógica Fluke
+  const barPercent = isOverload
+    ? 100
+    : voltageV >= 380
+      ? 92
+      : voltageV >= 200
+        ? 62
+        : voltageV >= 20
+          ? 28
+          : currentA > 0
+            ? Math.min(85, Math.max(15, currentA * 10))
+            : 0;
 
   return (
-    <div className="absolute top-14 left-6 z-40 w-80 bg-gradient-to-b from-amber-500 to-amber-600 p-2.5 rounded-2xl shadow-2xl border-4 border-slate-900 select-none text-slate-900 animate-in fade-in zoom-in-95 duration-150">
-      {/* Marco de polímero amarillo del multímetro Fluke */}
-      <div className="bg-slate-900 rounded-xl p-3 text-white">
-        {/* Cabecera de la carátula */}
-        <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-          <div className="flex items-center gap-1.5">
-            <Zap className="w-4 h-4 text-amber-400" />
-            <span className="text-[11px] font-bold tracking-wider font-mono text-amber-400">
-              FLUKE-87V TRUE RMS PRO
+    <div className="absolute top-4 right-4 z-40 w-80 bg-gradient-to-b from-amber-400 via-amber-500 to-amber-600 p-2 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.45)] border-2 border-slate-900 select-none text-slate-100 animate-in fade-in zoom-in-95 duration-150">
+      {/* Carcasa interior oscura Fluke 87V */}
+      <div className="bg-slate-950 rounded-xl p-3 border border-slate-800/90 space-y-2.5">
+        {/* 1. CABECERA FLUKE + SONDA + AUDIO + CERRAR */}
+        <div className="flex items-center justify-between pb-2 border-b border-slate-800/90">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <div className="w-5 h-5 rounded-md bg-amber-400/15 border border-amber-400/40 flex items-center justify-center shrink-0">
+              <Zap className="w-3.5 h-3.5 text-amber-400" />
+            </div>
+            <span className="text-[10.5px] font-black tracking-wider font-mono text-amber-400 truncate">
+              FLUKE-87V • SONDA EN VIVO
             </span>
           </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                const next = !soundEnabled;
+                setSoundEnabled(next);
+                if (next) soundEffects.playContinuityBeep(65);
+              }}
+              title={soundEnabled ? 'Silenciar zumbador' : 'Activar zumbador de sonda'}
+              aria-label={soundEnabled ? 'Silenciar zumbador' : 'Activar zumbador de sonda'}
+              className={`p-1 rounded-md transition-colors cursor-pointer ${
+                soundEnabled
+                  ? 'text-amber-400 bg-amber-400/10 hover:bg-amber-400/20'
+                  : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              {soundEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              title="Cerrar multímetro"
+              aria-label="Cerrar multímetro"
+              className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Píldora interactiva de control de Sonda Activa */}
+        <div className="flex items-center justify-between gap-2">
           <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-white p-0.5 rounded text-xs"
+            type="button"
+            onClick={onToggleProbe}
+            className={`flex-1 flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition-all cursor-pointer ${
+              isProbeActive
+                ? 'bg-amber-500/15 border-amber-400/70 text-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.18)]'
+                : 'bg-slate-900 border-slate-700/80 text-slate-400 hover:text-slate-200 hover:border-slate-600'
+            }`}
           >
-            <X className="w-4 h-4" />
+            <span className="flex items-center gap-1.5">
+              <Crosshair className={`w-3.5 h-3.5 ${isProbeActive ? 'text-amber-400' : 'text-slate-500'}`} />
+              <span>{isProbeActive ? 'Sonda Activa' : 'Activar Sonda'}</span>
+            </span>
+            <span className="flex items-center gap-1.5 text-[10px] font-mono">
+              {isProbeActive ? (
+                <>
+                  <span className="text-amber-300/80">TOCAR PUNTO</span>
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-400" />
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-500">OFF</span>
+              )}
+            </span>
           </button>
         </div>
 
-        {/* PANTALLA LCD RETROILUMINADA */}
-        <div className="mt-2.5 p-3 rounded-lg bg-[#0c1f17] border border-emerald-950 font-mono text-emerald-400 shadow-inner flex flex-col justify-between h-28">
-          <div className="flex justify-between items-center text-[10px] text-emerald-600 font-bold">
+        {/* 5. BANNER INLINE SI LA SIMULACIÓN NO ESTÁ CORRIENDO */}
+        {!isRunning && (
+          <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-amber-500/12 border border-amber-400/45 text-amber-200">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span className="text-[10.5px] leading-tight font-medium">
+                {simulationState.mode === 'paused'
+                  ? 'Simulación en pausa.'
+                  : 'Simulación detenida (0.0 V).'}
+              </span>
+            </div>
+            {onStartSimulation && (
+              <button
+                type="button"
+                onClick={onStartSimulation}
+                className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-400 hover:bg-amber-300 text-slate-950 text-[10px] font-extrabold tracking-tight transition-colors shadow-xs cursor-pointer"
+              >
+                <Play className="w-3 h-3 fill-slate-950" />
+                Iniciar simulación
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* 2. BADGE DEL PUNTO TOCADO O INSTRUCCIÓN DE SONDA */}
+        {measurement ? (
+          <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[8.5px] font-mono font-bold text-slate-400 shrink-0">
+                {getTargetTypeBadge(measurement.targetType)}
+              </span>
+              <span
+                className="text-[11px] font-semibold text-slate-100 truncate"
+                title={measurement.label}
+              >
+                {measurement.label}
+              </span>
+            </div>
+            <span
+              className={`px-1.5 py-0.5 rounded-md border text-[9.5px] font-mono font-bold shrink-0 ${getPotentialBadgeStyle(
+                isStopped ? 'Sin tensión' : measurement.potential,
+                isEnergized
+              )}`}
+            >
+              {isStopped ? 'Sin tensión' : measurement.potential}
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-slate-900/80 border border-dashed border-slate-700/90 text-slate-400">
+            <Crosshair className="w-4 h-4 text-amber-400/80 shrink-0" />
+            <p className="text-[10.5px] leading-snug">
+              Haz clic en cualquier cable, borne o componente del esquema para medir en vivo
+            </p>
+          </div>
+        )}
+
+        {/* 3. PANTALLA LCD RETROILUMINADA DE 3 CANALES SIMULTÁNEOS */}
+        <div className="rounded-xl bg-[#071912] border border-emerald-900/90 p-2.5 font-mono shadow-[inset_0_2px_14px_rgba(0,0,0,0.85)] space-y-2">
+          {/* Barra superior LCD */}
+          <div className="flex items-center justify-between text-[8.5px] font-bold tracking-wider text-emerald-500/80">
             <span>TRUE RMS</span>
             <span>AUTO RANGE</span>
-            <span>
-              {selectedChannel === 'resistance' ? 'Ω CONTINUIDAD' : '60.0 Hz'}
+            <span className={isOverload ? 'text-rose-400 animate-pulse' : 'text-emerald-400'}>
+              {isOverload ? 'OVERLOAD' : freqLabel}
             </span>
           </div>
 
-          <div className="flex items-baseline justify-end gap-1.5 my-auto">
-            <span className="text-3xl font-extrabold tracking-wider font-mono text-emerald-300 drop-shadow-[0_0_8px_rgba(110,231,183,0.5)]">
-              {selectedChannel === 'voltage_ll' && voltageLL.toFixed(1).padStart(5, '0')}
-              {selectedChannel === 'voltage_ln' && voltageLN.toFixed(1).padStart(5, '0')}
-              {selectedChannel === 'coil_v' && coilVoltage.toFixed(1).padStart(5, '0')}
-              {selectedChannel === 'current' && currentMotor.toFixed(2).padStart(5, '0')}
-              {selectedChannel === 'resistance' && resistanceDisplay}
-              {selectedChannel === 'power' && activePowerKW}
-            </span>
-            <span className="text-sm font-bold text-emerald-400">
-              {(selectedChannel === 'voltage_ll' || selectedChannel === 'voltage_ln' || selectedChannel === 'coil_v') && "V AC"}
-              {selectedChannel === 'current' && "A"}
-              {selectedChannel === 'resistance' && (isResistanceOL ? "" : "Ω")}
-              {selectedChannel === 'power' && "kW"}
-            </span>
+          {/* CANAL 1: VOLTAJE (Principal) */}
+          <div className="flex items-end justify-between border-b border-emerald-950/90 pb-1.5">
+            <div className="flex flex-col">
+              <span className="text-[8.5px] font-bold tracking-widest text-emerald-600">
+                VOLTAJE
+              </span>
+              <span className="text-[9px] text-emerald-700 mt-0.5">
+                {!hasReading ? 'STANDBY' : isEnergized ? 'CON TENSIÓN' : 'SIN TENSIÓN'}
+              </span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span
+                className={`text-[27px] leading-none font-black tracking-tight tabular-nums ${
+                  voltageV > 0
+                    ? 'text-emerald-300 drop-shadow-[0_0_10px_rgba(52,211,153,0.45)]'
+                    : 'text-emerald-500/55'
+                }`}
+              >
+                {voltageV.toFixed(1)}
+              </span>
+              <span
+                className={`text-xs font-extrabold ${
+                  voltageV > 0 ? 'text-emerald-400' : 'text-emerald-600'
+                }`}
+              >
+                {voltageUnit}
+              </span>
+            </div>
+          </div>
+
+          {/* CANALES 2 y 3: CORRIENTE y POTENCIA en paralelo */}
+          <div className="grid grid-cols-2 gap-2">
+            {/* CORRIENTE */}
+            <div
+              className={`rounded-lg px-2 py-1.5 border transition-colors ${
+                isOverload
+                  ? 'bg-rose-950/50 border-rose-500/60'
+                  : 'bg-emerald-950/35 border-emerald-900/50'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span
+                  className={`text-[8px] font-bold tracking-widest ${
+                    isOverload ? 'text-rose-400' : 'text-emerald-600'
+                  }`}
+                >
+                  CORRIENTE
+                </span>
+                {isOverload && (
+                  <span className="text-[8px] font-black text-rose-400 animate-pulse">OL!</span>
+                )}
+              </div>
+              <div className="mt-0.5 flex items-baseline justify-end gap-1">
+                <span
+                  className={`text-lg leading-tight font-extrabold tabular-nums ${
+                    isOverload
+                      ? 'text-rose-400 drop-shadow-[0_0_8px_rgba(251,113,133,0.7)] animate-pulse'
+                      : currentA > 0
+                        ? 'text-emerald-300 drop-shadow-[0_0_6px_rgba(52,211,153,0.35)]'
+                        : 'text-emerald-500/55'
+                  }`}
+                >
+                  {currentA.toFixed(2)}
+                </span>
+                <span
+                  className={`text-[10px] font-bold ${
+                    isOverload ? 'text-rose-300' : currentA > 0 ? 'text-emerald-400' : 'text-emerald-700'
+                  }`}
+                >
+                  A
+                </span>
+              </div>
+            </div>
+
+            {/* POTENCIA */}
+            <div className="rounded-lg px-2 py-1.5 bg-emerald-950/35 border border-emerald-900/50">
+              <div className="flex items-center justify-between">
+                <span className="text-[8px] font-bold tracking-widest text-emerald-600">
+                  POTENCIA
+                </span>
+                <span className="text-[8px] text-emerald-700">ACTIVA</span>
+              </div>
+              <div className="mt-0.5 flex items-baseline justify-end gap-1">
+                <span
+                  className={`text-lg leading-tight font-extrabold tabular-nums ${
+                    powerW > 0
+                      ? 'text-amber-300 drop-shadow-[0_0_6px_rgba(252,211,77,0.35)]'
+                      : 'text-emerald-500/55'
+                  }`}
+                >
+                  {powerFmt.value}
+                </span>
+                <span
+                  className={`text-[10px] font-bold ${
+                    powerW > 0 ? 'text-amber-400' : 'text-emerald-700'
+                  }`}
+                >
+                  {powerFmt.unit}
+                </span>
+              </div>
+            </div>
           </div>
 
           {/* Gráfico de barras analógico */}
-          <div className="w-full bg-emerald-950/60 h-1.5 rounded-full overflow-hidden">
+          <div className="w-full bg-emerald-950/80 h-1.5 rounded-full overflow-hidden">
             <div
               className={`h-full transition-all duration-150 ${
-                currentMotor > 15 ? 'bg-rose-500' : 'bg-emerald-400'
+                isOverload
+                  ? 'bg-gradient-to-r from-amber-400 via-rose-500 to-rose-400'
+                  : 'bg-gradient-to-r from-emerald-500 to-emerald-300'
               }`}
-              style={{
-                width: selectedChannel === 'voltage_ll' && voltageLL > 0 ? '80%' :
-                       selectedChannel === 'current' && currentMotor > 15 ? '98%' :
-                       selectedChannel === 'current' && currentMotor > 0 ? '60%' :
-                       selectedChannel === 'coil_v' && coilVoltage > 0 ? '70%' :
-                       selectedChannel === 'resistance' && !isResistanceOL ? '45%' : '0%'
-              }}
+              style={{ width: `${barPercent}%` }}
             />
           </div>
+
+          {/* 4. PIE DE DIAGNÓSTICO DENTRO DEL LCD */}
+          <div className="pt-1 border-t border-emerald-950/90 flex items-center justify-between gap-2 text-[9.5px] leading-tight">
+            <span
+              className={`truncate ${
+                isOverload
+                  ? 'text-rose-300 font-bold'
+                  : isFaultNote
+                    ? 'text-amber-300 font-semibold'
+                    : hasReading && !isStopped
+                      ? 'text-emerald-300/90'
+                      : 'text-emerald-600'
+              }`}
+              title={statusNote}
+            >
+              {statusNote}
+            </span>
+            <span className="shrink-0 px-1.5 py-0.5 rounded bg-emerald-950/90 border border-emerald-900/70 text-[8.5px] font-bold text-emerald-400">
+              {freqLabel}
+            </span>
+          </div>
         </div>
 
-        {/* SUB-SELECTORES SEGÚN CANAL */}
-        {selectedChannel === 'voltage_ll' && (
-          <div className="mt-2 flex items-center justify-between gap-1 text-[10px] font-mono">
-            {(['L1_L2', 'L2_L3', 'L1_L3'] as const).map(pair => (
-              <button
-                key={pair}
-                onClick={() => setPhasePair(pair)}
-                className={`flex-1 py-1 rounded transition-colors ${
-                  phasePair === pair
-                    ? 'bg-amber-400 text-slate-950 font-bold'
-                    : 'bg-slate-800 text-slate-400 hover:text-white'
-                }`}
-              >
-                {pair.replace('_', '-')}
-              </button>
-            ))}
+        {/* Aviso compacto si hay fallas inyectadas activas */}
+        {activeFaults.size > 0 && (
+          <div className="flex items-center justify-between px-2.5 py-1 rounded-lg bg-rose-950/60 border border-rose-500/40 text-[10px] text-rose-200 font-medium">
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+              {activeFaults.size === 1
+                ? '1 avería activa en el esquema'
+                : `${activeFaults.size} averías activas en el esquema`}
+            </span>
+            <span className="font-mono text-[9px] text-rose-300/90">DIAGNÓSTICO</span>
           </div>
         )}
 
-        {selectedChannel === 'resistance' && (
-          <div className="mt-2 space-y-1">
-            <div className="flex items-center justify-between text-[9px] text-slate-400 font-mono">
-              <span>PUNTAS DE PRUEBA EN:</span>
-              <button
-                onClick={handleTriggerBeep}
-                title="Comprobar zumbador de continuidad"
-                className="text-amber-400 hover:text-white flex items-center gap-0.5"
-              >
-                <Volume2 className="w-3 h-3" /> Beep
-              </button>
-            </div>
-            <div className="grid grid-cols-3 gap-1 text-[10px] font-mono">
-              <button
-                onClick={() => setResistancePoint('coil_km1')}
-                className={`py-1 rounded transition-colors text-center ${
-                  resistancePoint === 'coil_km1'
-                    ? 'bg-purple-600 text-white font-bold'
-                    : 'bg-slate-800 text-slate-400 hover:text-white'
-                }`}
-              >
-                Bobina A1-A2
-              </button>
-              <button
-                onClick={() => setResistancePoint('thermal_95_96')}
-                className={`py-1 rounded transition-colors text-center ${
-                  resistancePoint === 'thermal_95_96'
-                    ? 'bg-orange-600 text-white font-bold'
-                    : 'bg-slate-800 text-slate-400 hover:text-white'
-                }`}
-              >
-                Térmico 95-96
-              </button>
-              <button
-                onClick={() => setResistancePoint('breaker_q1')}
-                className={`py-1 rounded transition-colors text-center ${
-                  resistancePoint === 'breaker_q1'
-                    ? 'bg-blue-600 text-white font-bold'
-                    : 'bg-slate-800 text-slate-400 hover:text-white'
-                }`}
-              >
-                Guardamotor
-              </button>
-              <button
-                onClick={() => setResistancePoint('km1_contacts')}
-                className={`col-span-2 py-1 rounded transition-colors text-center ${
-                  resistancePoint === 'km1_contacts'
-                    ? 'bg-red-600 text-white font-bold'
-                    : 'bg-slate-800 text-slate-400 hover:text-white'
-                }`}
-              >
-                Polos KM1 (1-2)
-              </button>
-              <button
-                onClick={() => setResistancePoint('km1_aux_13_14')}
-                className={`py-1 rounded transition-colors text-center ${
-                  resistancePoint === 'km1_aux_13_14'
-                    ? 'bg-rose-600 text-white font-bold'
-                    : 'bg-slate-800 text-slate-400 hover:text-white'
-                }`}
-              >
-                NA 13-14
-              </button>
-            </div>
+        {/* Bornes inferiores compactos Fluke (V Ω / COM / 10A) */}
+        <div className="pt-1.5 border-t border-slate-800/80 flex items-center justify-around">
+          <div className="flex items-center gap-1.5">
+            <div className="w-3.5 h-3.5 rounded-full bg-red-600 border border-red-300/60 shadow-inner" />
+            <span className="text-[9px] font-mono font-bold text-slate-400">V Ω</span>
           </div>
-        )}
-
-        {/* SELECTOR GIRATORIO DE MAGNITUDES */}
-        <div className="mt-3 grid grid-cols-2 gap-1.5 text-[11px] font-mono font-semibold">
-          <button
-            onClick={() => setSelectedChannel('voltage_ll')}
-            className={`py-1.5 px-2 rounded-lg border transition-all ${
-              selectedChannel === 'voltage_ll'
-                ? 'bg-amber-500 text-slate-900 font-bold border-amber-300 shadow-xs'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-            }`}
-          >
-            V~ Fase-Fase (400V)
-          </button>
-
-          <button
-            onClick={() => setSelectedChannel('voltage_ln')}
-            className={`py-1.5 px-2 rounded-lg border transition-all ${
-              selectedChannel === 'voltage_ln'
-                ? 'bg-amber-500 text-slate-900 font-bold border-amber-300 shadow-xs'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-            }`}
-          >
-            V~ Fase-N (230V)
-          </button>
-
-          <button
-            onClick={() => setSelectedChannel('coil_v')}
-            className={`py-1.5 px-2 rounded-lg border transition-all ${
-              selectedChannel === 'coil_v'
-                ? 'bg-amber-500 text-slate-900 font-bold border-amber-300 shadow-xs'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-            }`}
-          >
-            V~ Bobina (A1-A2)
-          </button>
-
-          <button
-            onClick={() => setSelectedChannel('resistance')}
-            className={`py-1.5 px-2 rounded-lg border transition-all ${
-              selectedChannel === 'resistance'
-                ? 'bg-amber-500 text-slate-900 font-bold border-amber-300 shadow-xs'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-            }`}
-          >
-            Ω Continuidad
-          </button>
-
-          <button
-            onClick={() => setSelectedChannel('current')}
-            className={`py-1.5 px-2 rounded-lg border transition-all ${
-              selectedChannel === 'current'
-                ? 'bg-amber-500 text-slate-900 font-bold border-amber-300 shadow-xs'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-            }`}
-          >
-            I~ Pinza (A)
-          </button>
-
-          <button
-            onClick={() => setSelectedChannel('power')}
-            className={`py-1.5 px-2 rounded-lg border transition-all ${
-              selectedChannel === 'power'
-                ? 'bg-amber-500 text-slate-900 font-bold border-amber-300 shadow-xs'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-            }`}
-          >
-            Potencia (kW)
-          </button>
-        </div>
-
-        {/* Bornes de conexión COM / V / A */}
-        <div className="mt-3 pt-2 border-t border-slate-800 flex items-center justify-around">
-          <div className="flex flex-col items-center">
-            <div className="w-4 h-4 rounded-full bg-red-600 border border-white/50" />
-            <span className="text-[9px] text-slate-400 mt-0.5">V Ω</span>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3.5 h-3.5 rounded-full bg-slate-900 border border-slate-500 shadow-inner" />
+            <span className="text-[9px] font-mono font-bold text-slate-400">COM</span>
           </div>
-          <div className="flex flex-col items-center">
-            <div className="w-4 h-4 rounded-full bg-slate-900 border border-slate-600" />
-            <span className="text-[9px] text-slate-400 mt-0.5">COM</span>
-          </div>
-          <div className="flex flex-col items-center">
-            <div className="w-4 h-4 rounded-full bg-red-600 border border-white/50" />
-            <span className="text-[9px] text-slate-400 mt-0.5">10A</span>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3.5 h-3.5 rounded-full bg-red-700 border border-amber-400/50 shadow-inner" />
+            <span className="text-[9px] font-mono font-bold text-slate-400">10A MAX</span>
           </div>
         </div>
       </div>

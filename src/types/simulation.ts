@@ -16,6 +16,22 @@ export interface PneumaticState {
   atEnd: boolean;           // Final de carrera a1/b1
 }
 
+export interface ElectricalMeasurement {
+  label: string;            // Ej: "Cable Fase L1", "-M1 : U1", "-KM1 : A1"
+  targetType: 'wire' | 'pin' | 'component';
+  targetId: string;         // wireId, "compId:pinId" o compId
+  potential: string;        // "L1", "L2", "L3", "N", "PE", "+24V", "0V", "Sin tensión"
+  voltageV: number;         // Tensión eficaz medida en Voltios (400, 230, 24, 0)
+  voltageMode: 'AC' | 'DC';
+  currentA: number;         // Corriente en Amperios por la rama/carga
+  powerW: number;           // Potencia activa en Vatios (W)
+  frequencyHz: number;      // 60.0 para AC, 0 para DC
+  isEnergized: boolean;
+  statusNote: string;       // Diagnóstico físico breve del punto medido
+  gridX?: number;           // Posición opcional en cuadrícula para pin visual
+  gridY?: number;
+}
+
 export interface SimulationState {
   mode: SimulationMode;
   simulationTime: number;   // Tiempo transcurrido en segundos
@@ -42,4 +58,7 @@ export interface SimulationState {
     isLit: boolean;
   }>;
   pneumaticStates?: Map<string, PneumaticState>;
+  wireMetrics?: Map<string, ElectricalMeasurement>;
+  pinMetrics?: Map<string, ElectricalMeasurement>;
+  componentMetrics?: Map<string, ElectricalMeasurement>;
 }

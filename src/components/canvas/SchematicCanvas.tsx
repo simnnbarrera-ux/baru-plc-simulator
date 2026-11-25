@@ -1,17 +1,15 @@
-import React, { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { PlacedComponent, WireSegment, CircuitDocument, WireType } from '../../types/circuit';
 import { SimulationState } from '../../types/simulation';
 import { COMPONENT_CATALOG } from '../../core/components/catalog';
 import { ComponentRenderer } from './ComponentRenderer';
 import { WireRenderer } from './WireRenderer';
 import { TitleBlock } from './TitleBlock';
-import { 
-  ZoomIn, 
-  ZoomOut, 
-  Maximize2, 
-  Hand, 
-  MousePointer, 
-  RotateCcw 
+import {
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Hand
 } from 'lucide-react';
 
 export interface SchematicCanvasRef {
@@ -36,6 +34,9 @@ interface Props {
   activeWireType: WireType | null;
   activeTool: 'select' | 'wire' | 'delete' | string | null;
   selectedWireId?: string | null;
+  isProbeMode?: boolean;
+  probedMarker?: { x: number; y: number; label?: string } | null;
+  onProbeTarget?: (target: { kind: 'wire' | 'pin' | 'component'; id: string; x: number; y: number }) => void;
   onSetTool?: (tool: string | null) => void;
   onUpdateDocument: (doc: CircuitDocument, recordHistory?: boolean, prevSnapshot?: CircuitDocument) => void;
   onComponentSelect: (comp: PlacedComponent | null) => void;
@@ -52,6 +53,9 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   activeWireType,
   activeTool,
   selectedWireId,
+  isProbeMode = false,
+  probedMarker = null,
+  onProbeTarget,
   onSetTool,
   onUpdateDocument,
   onComponentSelect,
@@ -62,11 +66,36 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   onPressButton
 }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Dimensiones del plano estándar DIN A4 horizontal
-  const sheetWidth = 1200;
-  const sheetHeight = 860;
   const gridSize = document.gridSize || 20;
+
+  // Dimensiones dinámicas de la hoja de plano (base DIN A4 horizontal 1200x860, expansión automática sin colisión con TitleBlock)
+  const { sheetWidth, sheetHeight } = useMemo(() => {
+    let maxGridX = 0;
+    let maxGridY = 0;
+
+    for (const comp of document.components) {
+      const def = COMPONENT_CATALOG.find(c => c.type === comp.type);
+      const w = def ? (comp.rotation === 90 || comp.rotation === 270 ? def.height : def.width) : 4;
+      const h = def ? (comp.rotation === 90 || comp.rotation === 270 ? def.width : def.height) : 4;
+      maxGridX = Math.max(maxGridX, comp.x + w + 3);
+      maxGridY = Math.max(maxGridY, comp.y + h);
+    }
+
+    for (const wire of document.wires) {
+      maxGridX = Math.max(maxGridX, wire.fromX, wire.toX);
+      maxGridY = Math.max(maxGridY, wire.fromY, wire.toY);
+    }
+
+    for (const j of document.junctions) {
+      maxGridX = Math.max(maxGridX, j.x);
+      maxGridY = Math.max(maxGridY, j.y);
+    }
+
+    return {
+      sheetWidth: Math.max(1200, Math.ceil(maxGridX + 10) * gridSize),
+      sheetHeight: Math.max(860, Math.ceil(maxGridY + 14) * gridSize)
+    };
+  }, [document.components, document.wires, document.junctions, gridSize]);
 
   // Transformaciones de visualización (Pan & Zoom)
   const [zoom, setZoom] = useState<number>(0.65);
@@ -202,16 +231,24 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     const { clientWidth, clientHeight } = containerRef.current;
     if (clientWidth === 0 || clientHeight === 0) return;
 
-    // Si hay componentes en el esquema, encuadramos el circuito centrado a una escala cómoda
-    if (document.components && document.components.length > 0) {
+    const minZoom = 0.15;
+    const maxZoom = 1.15;
+
+    // Si el plano se expandió más allá de A4 estándar (ej. importación .cad grande) o está vacío,
+    // encuadrar la hoja completa con márgenes cómodos para ver todo el esquema dentro del marco blanco.
+    const hasContent = (document.components && document.components.length > 0) || (document.wires && document.wires.length > 0);
+    const isExpandedSheet = sheetWidth > 1200 || sheetHeight > 860;
+
+    if (hasContent && !isExpandedSheet) {
       let minX = Infinity;
       let maxX = -Infinity;
       let minY = Infinity;
       let maxY = -Infinity;
 
       document.components.forEach(c => {
-        const w = 4 * gridSize;
-        const h = (c.type.includes('motor') ? 6 : 4) * gridSize;
+        const def = COMPONENT_CATALOG.find(item => item.type === c.type);
+        const w = (def ? (c.rotation === 90 || c.rotation === 270 ? def.height : def.width) : 4) * gridSize + 40;
+        const h = (def ? (c.rotation === 90 || c.rotation === 270 ? def.width : def.height) : 4) * gridSize;
         minX = Math.min(minX, c.x * gridSize);
         maxX = Math.max(maxX, c.x * gridSize + w);
         minY = Math.min(minY, c.y * gridSize);
@@ -228,8 +265,8 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       }
 
       // Márgenes cómodos alrededor del circuito en píxeles de dibujo
-      const padCircuitX = 35;
-      const padCircuitY = 25;
+      const padCircuitX = 40;
+      const padCircuitY = 30;
       const boxMinX = Math.max(0, minX - padCircuitX);
       const boxMaxX = Math.min(sheetWidth, maxX + padCircuitX);
       const boxMinY = Math.max(0, minY - padCircuitY);
@@ -248,9 +285,8 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
 
       const scaleX = availW / boxW;
       const scaleY = availH / boxH;
-      // Ajuste exacto para que el circuito NUNCA se corte ni arriba ni abajo
       const fitZoom = Math.min(scaleX, scaleY);
-      const optimalZoom = Math.min(Math.max(0.40, fitZoom), 1.15);
+      const optimalZoom = Math.min(Math.max(minZoom, fitZoom), maxZoom);
 
       const centeredX = clientWidth / 2 - boxCenterX * optimalZoom;
       const centeredY = clientHeight / 2 - boxCenterY * optimalZoom;
@@ -258,32 +294,39 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       setZoom(Number(optimalZoom.toFixed(2)));
       setPan({ x: Math.round(centeredX), y: Math.round(centeredY) });
     } else {
-      // Si el lienzo está vacío, encuadramos la hoja completa
-      const padding = 50;
-      const availableW = clientWidth - padding * 2;
-      const availableH = clientHeight - padding * 2;
+      // Encuadrar la hoja blanca completa (ideal para hojas vacías o planos grandes importados de CADe_SIMU)
+      const padding = 36;
+      const availableW = Math.max(200, clientWidth - padding * 2);
+      const availableH = Math.max(200, clientHeight - padding * 2);
 
       const scaleX = availableW / sheetWidth;
       const scaleY = availableH / sheetHeight;
-      const optimalZoom = Math.min(Math.max(0.6, Math.min(scaleX, scaleY)), 1.1);
+      const optimalZoom = Math.min(Math.max(minZoom, Math.min(scaleX, scaleY)), maxZoom);
 
       const centeredX = (clientWidth - sheetWidth * optimalZoom) / 2;
       const centeredY = (clientHeight - sheetHeight * optimalZoom) / 2;
 
-      setZoom(optimalZoom);
+      setZoom(Number(optimalZoom.toFixed(2)));
       setPan({ x: Math.round(centeredX), y: Math.round(centeredY) });
     }
   }, [document.components, document.wires, gridSize, sheetWidth, sheetHeight]);
 
-  // Ajustar automáticamente al cargar y ante cambios de tamaño del contenedor
+  // Ref estable a fitToScreen para evitar re-encuadres molestos al pulsar botones o arrastrar 1 elemento
+  const fitToScreenRef = useRef(fitToScreen);
+  fitToScreenRef.current = fitToScreen;
+
+  // Ajustar automáticamente al montar, redimensionar contenedor o cargar un esquema/hoja nueva
+  const prevCompCountRef = useRef<number>(document.components.length);
+  const sheetKey = `${sheetWidth}x${sheetHeight}:${document.titleBlock?.title || ''}`;
+
   useEffect(() => {
     const timer = setTimeout(() => {
-      fitToScreen();
-    }, 100);
+      fitToScreenRef.current();
+    }, 80);
 
     if (!containerRef.current) return () => clearTimeout(timer);
     const observer = new ResizeObserver(() => {
-      fitToScreen();
+      fitToScreenRef.current();
     });
     observer.observe(containerRef.current);
 
@@ -291,7 +334,18 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       clearTimeout(timer);
       observer.disconnect();
     };
-  }, [fitToScreen]);
+  }, [sheetKey]);
+
+  useEffect(() => {
+    const prev = prevCompCountRef.current;
+    const curr = document.components.length;
+    prevCompCountRef.current = curr;
+    // Si cambió masivamente la cantidad de componentes (importación .cad o carga de preset), re-encuadrar
+    if (Math.abs(curr - prev) > 1) {
+      const timer = setTimeout(() => fitToScreenRef.current(), 80);
+      return () => clearTimeout(timer);
+    }
+  }, [document.components.length]);
 
   // Convertir coordenadas del ratón a coordenadas de la rejilla (flotante y entera)
   const screenToGridRaw = useCallback((clientX: number, clientY: number) => {
@@ -332,7 +386,7 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const zoomMultiplier = e.deltaY < 0 ? 1.12 : 0.89;
-    const newZoom = Math.min(Math.max(0.3, zoom * zoomMultiplier), 3.0);
+    const newZoom = Math.min(Math.max(0.15, zoom * zoomMultiplier), 3.0);
 
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
@@ -366,7 +420,7 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     const rect = containerRef.current.getBoundingClientRect();
     const centerX = rect.width / 2;
     const centerY = rect.height / 2;
-    const newZoom = Math.max(0.3, zoom * 0.83);
+    const newZoom = Math.max(0.15, zoom * 0.83);
     setPan(prev => ({
       x: centerX - (centerX - prev.x) * (newZoom / zoom),
       y: centerY - (centerY - prev.y) * (newZoom / zoom)
@@ -500,6 +554,11 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
 
     if (e.button !== 0) return;
 
+    // En modo sonda multímetro, no iniciar cableado ni alterar selección al presionar el botón
+    if (isProbeMode) {
+      return;
+    }
+
     // Si estamos en modo cableado, resolver click de conexión con snapping
     if (isWiringMode) {
       handleSnapClick(e);
@@ -541,8 +600,8 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       setHoveredSnap(null);
     }
 
-    // Arrastre de componentes (sólo fuera de modo cableado)
-    if (!isWiringMode && draggingCompId && simulationState.mode === 'stopped') {
+    // Arrastre de componentes (sólo fuera de modo cableado y fuera de modo sonda)
+    if (!isWiringMode && !isProbeMode && draggingCompId && simulationState.mode === 'stopped') {
       const updatedComps = document.components.map(c => {
         if (c.id === draggingCompId) {
           return {
@@ -576,6 +635,17 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   const handleWireClick = useCallback((wire: WireSegment, e: React.MouseEvent) => {
     if (isPanning || isPanToolActive) return;
 
+    if (isProbeMode) {
+      e.stopPropagation();
+      onProbeTarget?.({
+        kind: 'wire',
+        id: wire.id,
+        x: (wire.fromX + wire.toX) / 2,
+        y: (wire.fromY + wire.toY) / 2
+      });
+      return;
+    }
+
     if (isWiringMode) {
       handleSnapClick(e);
       return;
@@ -591,11 +661,67 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     setSelectedWire(wire.id);
     setSelectedId(null);
     onComponentSelect(null);
-  }, [isPanning, isPanToolActive, isWiringMode, activeTool, deleteWire, handleSnapClick, onComponentSelect, setSelectedWire]);
+  }, [isPanning, isPanToolActive, isProbeMode, onProbeTarget, isWiringMode, activeTool, deleteWire, handleSnapClick, onComponentSelect, setSelectedWire]);
 
   // Interacción con componentes
   const handleComponentClick = (comp: PlacedComponent, e: React.MouseEvent) => {
     if (isPanning || isPanToolActive) return;
+
+    if (isProbeMode) {
+      e.stopPropagation();
+      const def = COMPONENT_CATALOG.find(c => c.type === comp.type);
+      const { rawGridX, rawGridY } = screenToGridRaw(e.clientX, e.clientY);
+      const clickPxX = rawGridX * gridSize;
+      const clickPxY = rawGridY * gridSize;
+
+      if (def && def.pins.length > 0) {
+        let bestPin: { pinId: string; worldX: number; worldY: number; distPx: number } | null = null;
+        const maxPinDistPx = 0.8 * gridSize;
+
+        for (const pin of def.pins) {
+          let px = pin.relX;
+          let py = pin.relY;
+          if (comp.rotation === 90) {
+            const oldX = px;
+            px = def.height - py;
+            py = oldX;
+          } else if (comp.rotation === 180) {
+            px = def.width - px;
+            py = def.height - py;
+          } else if (comp.rotation === 270) {
+            const oldX = px;
+            px = py;
+            py = def.width - oldX;
+          }
+
+          const worldX = comp.x + px;
+          const worldY = comp.y + py;
+          const distPx = Math.hypot(worldX * gridSize - clickPxX, worldY * gridSize - clickPxY);
+
+          if (distPx <= maxPinDistPx && (!bestPin || distPx < bestPin.distPx)) {
+            bestPin = { pinId: pin.id, worldX, worldY, distPx };
+          }
+        }
+
+        if (bestPin) {
+          onProbeTarget?.({
+            kind: 'pin',
+            id: `${comp.id}:${bestPin.pinId}`,
+            x: bestPin.worldX,
+            y: bestPin.worldY
+          });
+          return;
+        }
+      }
+
+      onProbeTarget?.({
+        kind: 'component',
+        id: comp.id,
+        x: comp.x + (def ? def.width / 2 : 1),
+        y: comp.y + (def ? def.height / 2 : 1)
+      });
+      return;
+    }
 
     if (isWiringMode) {
       e.stopPropagation();
@@ -627,8 +753,56 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
     onComponentSelect(comp);
   };
 
+  // Clic de respaldo en el lienzo cuando el usuario apunta a un pin en modo sonda multímetro
+  const handleCanvasProbeClick = (e: React.MouseEvent) => {
+    if (!isProbeMode || isPanning || isPanToolActive || isSpacePressed || e.button !== 0) return;
+
+    const { rawGridX, rawGridY } = screenToGridRaw(e.clientX, e.clientY);
+    const clickPxX = rawGridX * gridSize;
+    const clickPxY = rawGridY * gridSize;
+    const maxPinDistPx = 0.8 * gridSize;
+
+    let bestPin: { compId: string; pinId: string; worldX: number; worldY: number; distPx: number } | null = null;
+    for (const comp of document.components) {
+      const def = COMPONENT_CATALOG.find(c => c.type === comp.type);
+      if (!def) continue;
+      for (const pin of def.pins) {
+        let px = pin.relX;
+        let py = pin.relY;
+        if (comp.rotation === 90) {
+          const oldX = px;
+          px = def.height - py;
+          py = oldX;
+        } else if (comp.rotation === 180) {
+          px = def.width - px;
+          py = def.height - py;
+        } else if (comp.rotation === 270) {
+          const oldX = px;
+          px = py;
+          py = def.width - oldX;
+        }
+        const worldX = comp.x + px;
+        const worldY = comp.y + py;
+        const distPx = Math.hypot(worldX * gridSize - clickPxX, worldY * gridSize - clickPxY);
+        if (distPx <= maxPinDistPx && (!bestPin || distPx < bestPin.distPx)) {
+          bestPin = { compId: comp.id, pinId: pin.id, worldX, worldY, distPx };
+        }
+      }
+    }
+
+    if (bestPin) {
+      onProbeTarget?.({
+        kind: 'pin',
+        id: `${bestPin.compId}:${bestPin.pinId}`,
+        x: bestPin.worldX,
+        y: bestPin.worldY
+      });
+    }
+  };
+
   const handleComponentMouseDown = (comp: PlacedComponent, e: React.MouseEvent) => {
     if (isSpacePressed || isPanToolActive || e.button === 2) return;
+    if (isProbeMode) return; // En modo sonda multímetro no iniciar arrastre ni selección
     if (isWiringMode) return; // En modo cableado no iniciar arrastre
     if (simulationState.mode !== 'stopped') return;
     if (e.button === 0) {
@@ -733,6 +907,7 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
   const getCursorClass = () => {
     if (isPanning) return 'cursor-grabbing';
     if (isSpacePressed || isPanToolActive) return 'cursor-grab';
+    if (isProbeMode) return 'cursor-crosshair';
     if (isWiringMode) {
       return hoveredSnap ? 'cursor-pointer' : 'cursor-crosshair';
     }
@@ -747,10 +922,11 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
+      onClick={handleCanvasProbeClick}
       onContextMenu={e => e.preventDefault()}
     >
       <svg
-        className="w-full h-full overflow-visible"
+        className={`w-full h-full overflow-visible ${isProbeMode ? 'cursor-crosshair' : ''}`}
         width="100%"
         height="100%"
       >
@@ -961,6 +1137,64 @@ export const SchematicCanvas = forwardRef<SchematicCanvasRef, Props>(({
           gridSize={gridSize}
           onEditClick={() => {}}
         />
+
+        {/* Indicador luminoso ámbar de punta de prueba del Multímetro */}
+        {probedMarker && (
+          <g
+            transform={`translate(${probedMarker.x * gridSize}, ${probedMarker.y * gridSize})`}
+            className="probe-marker pointer-events-none"
+          >
+            {/* Halo exterior ámbar */}
+            <circle cx={0} cy={0} r={16} fill="#f59e0b" opacity={0.18} />
+            {/* Anillo pulsante */}
+            <circle
+              cx={0}
+              cy={0}
+              r={12}
+              fill="none"
+              stroke="#f59e0b"
+              strokeWidth={2}
+              className="animate-ping"
+              opacity={0.65}
+            />
+            {/* Anillo nítido de precisión */}
+            <circle cx={0} cy={0} r={9} fill="none" stroke="#d97706" strokeWidth={2} />
+            {/* Retícula / mira de sonda */}
+            <line x1={-15} y1={0} x2={-5} y2={0} stroke="#f59e0b" strokeWidth={1.75} strokeLinecap="round" />
+            <line x1={5} y1={0} x2={15} y2={0} stroke="#f59e0b" strokeWidth={1.75} strokeLinecap="round" />
+            <line x1={0} y1={-15} x2={0} y2={-5} stroke="#f59e0b" strokeWidth={1.75} strokeLinecap="round" />
+            <line x1={0} y1={5} x2={0} y2={15} stroke="#f59e0b" strokeWidth={1.75} strokeLinecap="round" />
+            {/* Punta central */}
+            <circle cx={0} cy={0} r={3} fill="#fbbf24" stroke="#78350f" strokeWidth={1.25} />
+            {/* Etiqueta opcional de lectura/nodo sondeado */}
+            {probedMarker.label && (() => {
+              const boxW = Math.max(54, probedMarker.label.length * 6.5 + 14);
+              return (
+                <g transform="translate(0, -24)">
+                  <rect
+                    x={-boxW / 2}
+                    y={-12}
+                    width={boxW}
+                    height={17}
+                    rx={4}
+                    fill="#0f172a"
+                    fillOpacity={0.94}
+                    stroke="#f59e0b"
+                    strokeWidth={1.2}
+                  />
+                  <text
+                    x={0}
+                    y={0}
+                    textAnchor="middle"
+                    className="text-[10px] font-mono font-bold fill-amber-300 select-none"
+                  >
+                    {probedMarker.label}
+                  </text>
+                </g>
+              );
+            })()}
+          </g>
+        )}
 
         {/* Mira y cursor de alineación de cuadrícula */}
         {isWiringMode && (

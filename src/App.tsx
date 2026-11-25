@@ -1,17 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { CircuitDocument, PlacedComponent, WireSegment, WireType } from './types/circuit';
-import { SimulationState } from './types/simulation';
+import { ElectricalMeasurement, SimulationState } from './types/simulation';
 import { CloudProject, CloudSyncStatus, ExamAttemptRecord } from './types/cloud';
 import { CircuitSolver } from './core/simulation/solver';
 import {
-  DIRECT_STARTER_CIRCUIT,
-  STAR_DELTA_CIRCUIT,
-  REVERSE_STARTER_CIRCUIT,
-  CONVEYOR_BELT_CIRCUIT,
-  WATER_TANK_PUMP_CIRCUIT,
   PLC_S71200_STARTER_CIRCUIT,
-  PNEUMATIC_PLC_CIRCUIT,
-  PNEUMATIC_TIA_PROGRAM
+  getExamplePreset
 } from './core/examples';
 import {
   DEFAULT_TIA_PROGRAM,
@@ -157,6 +151,13 @@ export const App: React.FC = () => {
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [isTimingOpen, setIsTimingOpen] = useState<boolean>(false);
   const [isMeterOpen, setIsMeterOpen] = useState<boolean>(false);
+  const [isProbeActive, setIsProbeActive] = useState<boolean>(false);
+  const [probedTarget, setProbedTarget] = useState<{
+    kind: 'wire' | 'pin' | 'component';
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [isReportOpen, setIsReportOpen] = useState<boolean>(false);
   const [isFaultsOpen, setIsFaultsOpen] = useState<boolean>(false);
 
@@ -969,35 +970,19 @@ export const App: React.FC = () => {
   const handleLoadExample = useCallback(
     (exampleId: string) => {
       handleStopSimulation();
-      let nextCircuit = DIRECT_STARTER_CIRCUIT;
-      let nextTia = DEFAULT_TIA_PROGRAM;
-
-      if (exampleId === 'plc_s71200') {
-        nextCircuit = PLC_S71200_STARTER_CIRCUIT;
-        nextTia = DEFAULT_TIA_PROGRAM;
-      } else if (exampleId === 'pneumatic_plc') {
-        nextCircuit = PNEUMATIC_PLC_CIRCUIT;
-        nextTia = PNEUMATIC_TIA_PROGRAM;
-      } else if (exampleId === 'star_delta') {
-        nextCircuit = STAR_DELTA_CIRCUIT;
-      } else if (exampleId === 'reverse') {
-        nextCircuit = REVERSE_STARTER_CIRCUIT;
-      } else if (exampleId === 'conveyor') {
-        nextCircuit = CONVEYOR_BELT_CIRCUIT;
-      } else if (exampleId === 'water_tank') {
-        nextCircuit = WATER_TANK_PUMP_CIRCUIT;
-      }
+      const preset = getExamplePreset(exampleId);
 
       setActiveCloudProjectId(null);
       setSharedBanner(null);
       setSyncStatus('idle');
-      updateDocWithHistory(nextCircuit, true);
-      setTiaProgram(nextTia);
-      setTiaRuntime(createInitialRuntime(nextTia));
+      setProbedTarget(null);
+      updateDocWithHistory(preset.circuit, true);
+      setTiaProgram(preset.tiaProgram);
+      setTiaRuntime(createInitialRuntime(preset.tiaProgram));
       setSelectedComponent(null);
       setSelectedWire(null);
       setActiveView('cad');
-      showToast(`Cargado: ${nextCircuit.titleBlock.title}`, 'info');
+      showToast(`Cargado: ${preset.label} (CAD + LAD + SCL + GRAFCET)`, 'info');
       setTimeout(() => canvasRef.current?.fitToScreen(), 150);
     },
     [handleStopSimulation, showToast, updateDocWithHistory]
@@ -1132,6 +1117,87 @@ export const App: React.FC = () => {
   const isSimRunning = simulationState.mode === 'running' || simulationState.mode === 'paused';
   const combinedSchemaMissing = authSchemaMissing || repoSchemaMissing;
 
+  const handleOpenMultimeter = useCallback(() => {
+    setIsMeterOpen(true);
+    setIsProbeActive(true);
+    setActiveView('cad');
+    setIsDrawerOpen(false);
+  }, []);
+
+  const handleCloseMultimeter = useCallback(() => {
+    setIsMeterOpen(false);
+    setIsProbeActive(false);
+    setProbedTarget(null);
+  }, []);
+
+  // Medición en vivo del punto tocado con la sonda del multímetro
+  const activeMeasurement: ElectricalMeasurement | null = useMemo(() => {
+    if (!probedTarget) return null;
+
+    if (probedTarget.kind === 'wire') {
+      const m = simulationState.wireMetrics?.get(probedTarget.id);
+      if (m) return m;
+      const w = doc.wires.find(item => item.id === probedTarget.id);
+      return {
+        label: w ? `Cable (${w.wireType.toUpperCase()})` : 'Conductor',
+        targetType: 'wire',
+        targetId: probedTarget.id,
+        potential: 'Sin tensión',
+        voltageV: 0,
+        voltageMode: w?.wireType === 'dc_pos' || w?.wireType === 'dc_neg' ? 'DC' : 'AC',
+        currentA: 0,
+        powerW: 0,
+        frequencyHz: 0,
+        isEnergized: false,
+        statusNote: 'Simulación detenida — pulsa Iniciar simulación para medir en vivo',
+        gridX: probedTarget.x,
+        gridY: probedTarget.y
+      };
+    }
+
+    if (probedTarget.kind === 'pin') {
+      const m = simulationState.pinMetrics?.get(probedTarget.id);
+      if (m) return m;
+      const [compId, pinId] = probedTarget.id.split(':');
+      const comp = doc.components.find(c => c.id === compId);
+      return {
+        label: comp ? `${comp.tag} : Borne ${pinId}` : `Borne ${pinId}`,
+        targetType: 'pin',
+        targetId: probedTarget.id,
+        potential: 'Sin tensión',
+        voltageV: 0,
+        voltageMode: 'AC',
+        currentA: 0,
+        powerW: 0,
+        frequencyHz: 0,
+        isEnergized: false,
+        statusNote: 'Simulación detenida — pulsa Iniciar simulación para medir en vivo',
+        gridX: probedTarget.x,
+        gridY: probedTarget.y
+      };
+    }
+
+    const m = simulationState.componentMetrics?.get(probedTarget.id);
+    if (m) return m;
+    const comp = doc.components.find(c => c.id === probedTarget.id);
+    const def = comp ? COMPONENT_CATALOG.find(d => d.type === comp.type) : null;
+    return {
+      label: comp ? `${comp.tag} (${def?.name || comp.type})` : 'Componente',
+      targetType: 'component',
+      targetId: probedTarget.id,
+      potential: 'Sin tensión',
+      voltageV: 0,
+      voltageMode: 'AC',
+      currentA: 0,
+      powerW: 0,
+      frequencyHz: 0,
+      isEnergized: false,
+      statusNote: 'Simulación detenida — pulsa Iniciar simulación para medir en vivo',
+      gridX: probedTarget.x,
+      gridY: probedTarget.y
+    };
+  }, [probedTarget, simulationState.wireMetrics, simulationState.pinMetrics, simulationState.componentMetrics, doc.wires, doc.components]);
+
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-slate-100 text-slate-800 font-sans">
       {/* Cabecera Minimalista estilo Tinkercad */}
@@ -1151,7 +1217,7 @@ export const App: React.FC = () => {
         onLoadExample={handleLoadExample}
         onOpenImportModal={() => setExportModalTab('import')}
         onOpenExportModal={() => setExportModalTab('export')}
-        onOpenMultimeter={() => setIsMeterOpen(true)}
+        onOpenMultimeter={handleOpenMultimeter}
         onOpenTiming={() => setIsTimingOpen(true)}
         onOpenFaults={() => setIsFaultsOpen(true)}
         onOpenReport={() => setIsReportOpen(true)}
@@ -1210,6 +1276,16 @@ export const App: React.FC = () => {
                 onCoordinatesChange={(x, y) => setCoords({ x, y })}
                 onToggleBreaker={handleToggleBreaker}
                 onPressButton={handlePressButton}
+                isProbeMode={isMeterOpen && isProbeActive}
+                probedMarker={
+                  isMeterOpen && probedTarget
+                    ? { x: probedTarget.x, y: probedTarget.y, label: activeMeasurement?.label }
+                    : null
+                }
+                onProbeTarget={target => {
+                  setProbedTarget(target);
+                  soundEffects.playContinuityBeep(65);
+                }}
               />
 
               {/* Píldora flotante izquierda de acciones CAD */}
@@ -1286,6 +1362,7 @@ export const App: React.FC = () => {
               simulationState={simulationState}
               document={doc}
               onPressButton={handleTwinPressButton}
+              onLoadExample={handleLoadExample}
               onClose={() => setActiveView('cad')}
             />
           </div>
@@ -1333,8 +1410,12 @@ export const App: React.FC = () => {
         <VirtualMultimeter
           simulationState={simulationState}
           isOpen={isMeterOpen}
-          onClose={() => setIsMeterOpen(false)}
+          onClose={handleCloseMultimeter}
           activeFaults={activeFaults}
+          measurement={activeMeasurement}
+          isProbeActive={isProbeActive}
+          onToggleProbe={() => setIsProbeActive(prev => !prev)}
+          onStartSimulation={handleStartSimulation}
         />
       </div>
 
@@ -1423,13 +1504,20 @@ export const App: React.FC = () => {
           document={doc}
           tiaProgram={tiaProgram}
           onClose={() => setExportModalTab(null)}
-          onImportCircuit={newDoc => {
+          onImportCircuit={(newDoc, extractedTia) => {
             handleStopSimulation();
+            setActiveCloudProjectId(null);
+            setSharedBanner(null);
+            setProbedTarget(null);
             updateDocWithHistory(newDoc, true);
+            if (extractedTia) {
+              setTiaProgram(extractedTia);
+              setTiaRuntime(createInitialRuntime(extractedTia));
+            }
             setSelectedComponent(null);
             setSelectedWire(null);
             setActiveView('cad');
-            setTimeout(() => canvasRef.current?.fitToScreen(), 150);
+            setTimeout(() => canvasRef.current?.fitToScreen(), 200);
           }}
           onImportTiaProgram={newProg => {
             handleStopSimulation();
@@ -1455,7 +1543,7 @@ export const App: React.FC = () => {
         onStartExam={handleStartExam}
         onSubmitExamAnswer={handleSubmitExamAnswer}
         onResetExam={handleResetExam}
-        onOpenMultimeter={() => setIsMeterOpen(true)}
+        onOpenMultimeter={handleOpenMultimeter}
         simulationState={simulationState}
       />
 

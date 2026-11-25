@@ -106,8 +106,13 @@ Desde el botón **Exportar / Importar** ([`UnifiedExportModal.tsx`](file:///C:/U
 
 ### Formatos CADe_SIMU (`src/core/format/cadParser.ts`)
 * **`.cad` (V4.2):** Generador con delimitadores exactos `CADe_SIMU*0*`, cajetín ISO 7200 (`Simón Barrera Ruíz`), cables DC (`4018`/`4019`), bloques PLC (`10200`) y actuadores neumáticos (`10501`/`10510`).
-* **Parser adaptativo V1.0–V4.2:** Scanner tolerante capaz de importar archivos externos de distintas versiones de escritorio.
+* **Parser adaptativo V1.0–V4.2 + Hoja Dinámica:** Lee archivos de escritorio en codificación `ISO-8859-1`, descarta códigos puramente gráficos/decorativos sin crear contactos fantasma, ajusta escala/pines/uniones T, expande dinámicamente el tamaño de la lámina CAD para que diagramas grandes (como la Embotelladora GEMMA) nunca se salgan del plano y auto-extrae lógica `LAD`/`GRAFCET`/`SCL` a la pestaña `Código TIA`.
 * **`.json` (Bundle Completo):** Guarda simultáneamente el circuito CAD + el programa TIA Portal S7-1200.
+
+### Multímetro Sonda en Vivo, Ejemplos Nivel 1–8 y Planta 2D (4 Modos)
+* **Multímetro Fluke-87V por Sonda de Contacto ([`VirtualMultimeter.tsx`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/components/tools/VirtualMultimeter.tsx) + [`solver.ts`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/core/simulation/solver.ts)):** Al abrirlo activa el modo sonda en el esquema; hacer clic sobre cualquier cable, borne o componente muestra al instante **Voltaje (`V AC`/`DC`)**, **Corriente (`A`)** propagada por KCL y **Potencia (`W`/`kW`)** real del punto medido.
+* **Catálogo Ordenado por Complejidad Nivel 1 → 8 ([`examples/index.ts`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/core/examples/index.ts)):** Cada ejemplo incluye simultáneamente su esquema CAD verificado + su programa TIA completo (**LAD + SCL + GRAFCET + PLC Tags**), culminando en **Nivel 7: Banda Transportadora Clasificadora (S7-1200)** y **Nivel 8: Proyecto Final Embotelladora Industrial GEMMA (S7-1200)**.
+* **Gemelo Digital Planta 2D ([`DigitalTwinPlant.tsx`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/components/plant/DigitalTwinPlant.tsx)):** Cuatro plantas interactivas operativas: **Cinta Clasificadora**, **Tanque Bomba** (llenado/vaciado en vivo + válvulas/sensores MIN/MAX), **Neumática A+/A-** (acoplada al PLC real y con respaldo sincronizado para responder siempre a Marcha) y **Embotelladora GEMMA 2D** (avance, llenado `Y1`, tapado `Y2`, torreta GEMMA y contador de botellas).
 
 ### Formatos Siemens TIA Portal (`src/core/plc/tiaFormat.ts`)
 * **`.zip` Paquete Completo TIA Portal (V16–V21):** Generado 100 % en navegador sin dependencias externas (PKZIP Store + CRC32). Contiene:
