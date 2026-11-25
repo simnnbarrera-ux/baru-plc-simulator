@@ -44,13 +44,31 @@ import { AuthModal, AuthModalMode } from './components/auth/AuthModal';
 import { ProjectsModal, ProjectsModalTab } from './components/cloud/ProjectsModal';
 import { SharedProjectBanner } from './components/cloud/SharedProjectBanner';
 import { OnboardingWizard } from './components/onboarding/OnboardingWizard';
+import { LandingPage } from './components/landing/LandingPage';
 import { FaultId, FAULT_CATALOG, ExamSession } from './types/faults';
 import { COMPONENT_CATALOG } from './core/components/catalog';
 import { soundEffects } from './core/simulation/soundEffects';
-import { AlertOctagon, CheckCircle2, AlertCircle, Info } from 'lucide-react';
+import { AlertOctagon, CheckCircle2, AlertCircle, Info, Loader2 } from 'lucide-react';
 
 const GUEST_ONBOARDING_SEEN_KEY = 'baru_guest_onboarding_seen_v1';
 const SESSION_ONBOARDING_DONE_KEY = 'baru_onboarding_done_session_v1';
+
+const createEmptyTiaProgram = (): TiaProgramDocument => ({
+  cpuModel: 'S7-1200 CPU 1214C DC/DC/DC',
+  blockName: 'Main',
+  activeLanguage: 'LAD',
+  tags: [
+    { address: '%I0.0', name: 'Pulsador_Marcha', dataType: 'Bool', schematicTag: '-S1', comment: 'Entrada digital I0.0' },
+    { address: '%I0.1', name: 'Pulsador_Paro', dataType: 'Bool', schematicTag: '-S0', comment: 'Entrada digital I0.1' },
+    { address: '%Q0.0', name: 'Salida_KM1', dataType: 'Bool', schematicTag: '-KM1', comment: 'Salida relé Q0.0' }
+  ],
+  rungs: [],
+  sclCode: '// Nuevo bloque OB1 en SCL (IEC 61131-3)\n// Añade segmentos en LAD o escribe tu código SCL aquí\n',
+  grafcetSteps: [
+    { id: 0, name: 'E0', isInitial: true, actionTag: '', actionLabel: 'Etapa inicial (Reposo)' }
+  ],
+  grafcetTransitions: []
+});
 
 const createEmptySimulationState = (): SimulationState => ({
   mode: 'stopped',
@@ -96,7 +114,12 @@ export const App: React.FC = () => {
   const [sharedBanner, setSharedBanner] = useState<{ title: string; slug: string } | null>(null);
   const [isCloningShared, setIsCloningShared] = useState<boolean>(false);
 
-  // Modales Cloud / Auth / Onboarding
+  // Modales Cloud / Auth / Onboarding / Landing
+  const [enteredGuestWorkspace, setEnteredGuestWorkspace] = useState<boolean>(false);
+  const hasShareParam = useMemo(
+    () => Boolean(new URLSearchParams(window.location.search).get('share')?.trim()),
+    []
+  );
   const [authModalState, setAuthModalState] = useState<{
     open: boolean;
     mode: AuthModalMode;
@@ -241,8 +264,7 @@ export const App: React.FC = () => {
   // --------------------------------------------------------------------------
   useEffect(() => {
     if (authLoading) return;
-
-    const hasShareParam = Boolean(new URLSearchParams(window.location.search).get('share')?.trim());
+    if (!user && !enteredGuestWorkspace) return;
 
     // Caso 1: Usuario autenticado -> Supabase profiles es la fuente de la verdad
     if (user && profile) {
@@ -287,7 +309,7 @@ export const App: React.FC = () => {
     }
 
     // Caso 2: Invitado abriendo el programa por primera vez en este navegador
-    if (!user && !guestWizardTriggeredRef.current && !hasShareParam) {
+    if (!user && enteredGuestWorkspace && !guestWizardTriggeredRef.current && !hasShareParam) {
       guestWizardTriggeredRef.current = true;
       let alreadySeen: string | null = null;
       try {
@@ -300,7 +322,7 @@ export const App: React.FC = () => {
         setIsWizardOpen(true);
       }
     }
-  }, [authLoading, user, profile, completeOnboarding, skipOnboarding]);
+  }, [authLoading, user, profile, enteredGuestWorkspace, hasShareParam, completeOnboarding, skipOnboarding]);
 
   // --------------------------------------------------------------------------
   // Carga de Proyecto Compartido Público vía URL (?share=<slug>)
@@ -1163,9 +1185,14 @@ export const App: React.FC = () => {
       },
       true
     );
+    const emptyProg = createEmptyTiaProgram();
+    setTiaProgram(emptyProg);
+    setTiaRuntime(createInitialRuntime(emptyProg));
+    setProbedTarget(null);
     setSelectedComponent(null);
     setSelectedWire(null);
-  }, [handleStopSimulation, profile?.full_name, updateDocWithHistory]);
+    showToast('Nuevo proyecto en blanco (CAD + LAD + SCL + GRAFCET)', 'info');
+  }, [handleStopSimulation, profile?.full_name, updateDocWithHistory, showToast]);
 
   const handleTwinPressButton = useCallback(
     (btnKey: string, isPressed: boolean) => {
@@ -1247,18 +1274,45 @@ export const App: React.FC = () => {
   const handleSignOut = useCallback(async () => {
     const res = await signOut();
     if (res.success) {
+      setEnteredGuestWorkspace(false);
       showToast('Sesión cerrada correctamente', 'info');
     } else if (res.error) {
       showToast(res.error, 'error');
     }
   }, [signOut, showToast]);
 
+  const handleOpenImportModal = useCallback(() => {
+    if (!user) {
+      setAuthModalState({
+        open: true,
+        mode: 'signup',
+        reason: 'Modo Invitado: inicia sesión o crea una cuenta gratuita para importar archivos .cad, .xml, .scl o .json.'
+      });
+      showToast('Inicia sesión para importar proyectos', 'info');
+      return;
+    }
+    setExportModalTab('import');
+  }, [user, showToast]);
+
+  const handleOpenExportModal = useCallback(() => {
+    if (!user) {
+      setAuthModalState({
+        open: true,
+        mode: 'signup',
+        reason: 'Modo Invitado: inicia sesión o crea una cuenta gratuita para exportar archivos CADe_SIMU (.cad) y paquetes TIA Portal (.zip).'
+      });
+      showToast('Inicia sesión para exportar proyectos', 'info');
+      return;
+    }
+    setExportModalTab('export');
+  }, [user, showToast]);
+
   useEffect(() => {
-    if (activeView === 'cad') {
+    if (activeView === 'cad' && (user || enteredGuestWorkspace || hasShareParam)) {
       const t = setTimeout(() => canvasRef.current?.fitToScreen(), 80);
       return () => clearTimeout(t);
     }
-  }, [activeView]);
+  }, [activeView, user, enteredGuestWorkspace, hasShareParam]);
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -1348,6 +1402,40 @@ export const App: React.FC = () => {
     };
   }, [probedTarget, simulationState.wireMetrics, simulationState.pinMetrics, simulationState.componentMetrics, doc.wires, doc.components]);
 
+  if (authLoading && !user && !enteredGuestWorkspace && !hasShareParam) {
+    return (
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-[#030712] text-slate-200 select-none">
+        <Loader2 className="w-8 h-8 animate-spin text-sky-400 mb-3" />
+        <span className="text-xs font-semibold tracking-wider uppercase text-slate-400">
+          Cargando Baru Studio...
+        </span>
+      </div>
+    );
+  }
+
+  if (!authLoading && !user && !enteredGuestWorkspace && !hasShareParam) {
+    return (
+      <>
+        <LandingPage
+          onEnterGuest={() => setEnteredGuestWorkspace(true)}
+          onOpenAuth={mode => setAuthModalState({ open: true, mode, reason: null })}
+        />
+        <AuthModal
+          isOpen={authModalState.open}
+          initialMode={authModalState.mode}
+          reasonMessage={authModalState.reason}
+          onClose={() => setAuthModalState(prev => ({ ...prev, open: false }))}
+          onAuthSuccess={isNew => {
+            showToast(
+              isNew ? '¡Bienvenido! Tu cuenta fue creada con éxito' : 'Sesión iniciada correctamente',
+              'success'
+            );
+          }}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-slate-100 text-slate-800 font-sans">
       {/* Cabecera Minimalista estilo Tinkercad */}
@@ -1365,8 +1453,8 @@ export const App: React.FC = () => {
         onStepSimulation={handleStepSimulation}
         onNewProject={handleNewDocument}
         onLoadExample={handleLoadExample}
-        onOpenImportModal={() => setExportModalTab('import')}
-        onOpenExportModal={() => setExportModalTab('export')}
+        onOpenImportModal={handleOpenImportModal}
+        onOpenExportModal={handleOpenExportModal}
         onOpenMultimeter={handleOpenMultimeter}
         onOpenTiming={() => setIsTimingOpen(true)}
         onOpenFaults={() => setIsFaultsOpen(true)}
@@ -1384,6 +1472,7 @@ export const App: React.FC = () => {
         onOpenAuth={(mode = 'login') => setAuthModalState({ open: true, mode, reason: null })}
         onSignOut={handleSignOut}
         onReplayTutorial={handleReplayTutorial}
+        onReturnToLanding={() => setEnteredGuestWorkspace(false)}
       />
 
       {/* Banner de Proyecto Compartido Público (?share=...) */}
@@ -1585,7 +1674,7 @@ export const App: React.FC = () => {
 
       {/* Pie de página */}
       <footer className="shrink-0 bg-white/95 border-t border-slate-200/80 px-4 py-1 text-center text-[11px] text-slate-500 select-none z-30">
-        Desarrollado por Scibaru AI. (Simón Barrera Ruíz)
+        Desarrollado por Scibaru AI.
       </footer>
 
       {/* Modales Cloud & Auth */}

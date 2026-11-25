@@ -133,14 +133,19 @@ Desde el botón **Exportar / Importar** ([`UnifiedExportModal.tsx`](file:///C:/U
 
 ---
 
-## 5. Backend Supabase (DB-First), Autenticación y Wizard de 5 Pasos
+## 5. Landing Page 3D, Modo Invitado, Backend Supabase y Wizard de 5 Pasos
 
+* **Landing Page Interactiva 3D ([`LandingPage.tsx`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/components/landing/LandingPage.tsx), [`HeroAutomation3D.tsx`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/components/landing/HeroAutomation3D.tsx), [`LandingFeatures.tsx`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/components/landing/LandingFeatures.tsx), [`LandingAuthors.tsx`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/components/landing/LandingAuthors.tsx)):**
+  * Se muestra automáticamente cuando el visitante entra por primera vez o tiene la sesión cerrada (excepto en enlaces públicos `?share=`).
+  * Incluye emblema Hero de gran formato (`BrandLogo size="hero"`), escena interactiva **Three.js 3D** centrada con PLC S7-1200, pantalla OLED viva, cilindro neumático doble efecto animado, válvula 5/2 con mangueras, torreta GEMMA 3 colores y órbita 360°.
+  * Secciones de objetivo, Bento Grid de funcionalidades, comparativa **Invitado vs. Cuenta Gratuita** y apartado dedicado de **Autores del Proyecto**: **Simón Barrera Ruíz** (Estudiante de Ingeniería Mecatrónica) y **Juan Carlos Mena Moreno** (Director de Ingeniería Electrónica y Telecomunicaciones).
+* **Modo Invitado con Restricciones vs. Cuenta Autenticada:**
+  * El botón **Entrar como invitado** permite simular de inmediato (`Esquema CAD`, `Código TIA`, `Planta 2D`, 8 ejemplos, multímetro Fluke y Consola GEMMA), bloqueando **Guardar en la nube**, **Importar** y **Exportar** hasta iniciar sesión o crear una cuenta gratuita.
 * **Esquema SQL Idempotente ([`supabase/migrations/001_initial_schema.sql`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/supabase/migrations/001_initial_schema.sql)):**
   * `public.profiles`: perfil vinculado a `auth.users` con trigger automático `on_auth_user_created` y estado `onboarding_completed`, `onboarding_skipped` y `onboarding_step`.
   * `public.projects`: almacena proyectos unificados (`circuit_doc` + `tia_program` en JSONB), autoguardado con debounce, duplicación, borrado seguro y enlaces públicos compartibles (`?share=<slug>`) protegidos por RLS.
   * `public.exam_attempts`: historial persistente de diagnósticos de averías con puntaje, intentos y notas del estudiante.
-* **Acceso Libre + Autenticación Email/Contraseña:** Los usuarios pueden diseñar y simular de inmediato en modo invitado; al iniciar sesión o crear cuenta desbloquean sincronización en la nube, enlaces públicos e historial de exámenes.
-* **Wizard Tutorial Interactivo de 5 Pasos ([`OnboardingWizard.tsx`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/components/onboarding/OnboardingWizard.tsx)):** Se abre automáticamente al entrar por primera vez con una cuenta nueva (`onboarding_completed = false`), recorre con spotlight las vistas `Esquema CAD`, `Código TIA`, `Planta 2D` y `Nube / Exportar`, ofrece botón **Omitir tutorial** en cada paso y permite repetirlo desde el menú de usuario o `Herramientas`.
+* **Wizard Tutorial Interactivo de 5 Pasos ([`OnboardingWizard.tsx`](file:///C:/Users/User/Desktop/Proyectos/REA/Cadesimu/src/components/onboarding/OnboardingWizard.tsx)):** Se dispara solo al entrar por primera vez al simulador (invitado o cuenta nueva), nunca encima de la Landing Page, recorre `Esquema CAD`, `Código TIA`, `Planta 2D` y `Nube / Exportar`, y puede repetirse desde `Herramientas`.
 
 ---
 

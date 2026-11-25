@@ -26,7 +26,8 @@ import {
   LogOut,
   FolderKanban,
   GraduationCap,
-  Award
+  Award,
+  Lock
 } from 'lucide-react';
 import { SimulationMode } from '../../types/simulation';
 import { CloudSyncStatus } from '../../types/cloud';
@@ -67,6 +68,7 @@ interface Props {
   onOpenAuth: (mode?: 'login' | 'signup') => void;
   onSignOut: () => void;
   onReplayTutorial: () => void;
+  onReturnToLanding?: () => void;
 }
 
 export const TinkerHeader: React.FC<Props> = ({
@@ -99,7 +101,8 @@ export const TinkerHeader: React.FC<Props> = ({
   onOpenProjects,
   onOpenAuth,
   onSignOut,
-  onReplayTutorial
+  onReplayTutorial,
+  onReturnToLanding
 }) => {
   const [openMenu, setOpenMenu] = useState<'examples' | 'tools' | 'account' | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -125,13 +128,28 @@ export const TinkerHeader: React.FC<Props> = ({
     >
       {/* Izquierda: Marca + Nombre editable + Nuevo / Ejemplos / Herramientas */}
       <div className="flex items-center gap-1 min-w-0">
-        <div className="flex items-center gap-2 pr-2 border-r border-slate-200 shrink-0">
-          <BrandLogo collapsed />
-          <div className="hidden 2xl:flex flex-col leading-tight">
-            <span className="text-xs font-extrabold tracking-tight text-slate-900">Baru Studio</span>
-            <span className="text-[10px] font-semibold text-sky-600">CADe + TIA S7-1200</span>
+        {!isAuthenticated && onReturnToLanding ? (
+          <button
+            type="button"
+            onClick={onReturnToLanding}
+            title="Volver a la página de inicio"
+            className="flex items-center gap-2 pr-2 border-r border-slate-200 shrink-0 text-left cursor-pointer hover:opacity-85 transition-opacity"
+          >
+            <BrandLogo collapsed />
+            <div className="hidden 2xl:flex flex-col leading-tight">
+              <span className="text-xs font-extrabold tracking-tight text-slate-900">Baru Studio</span>
+              <span className="text-[10px] font-semibold text-sky-600">CADe + TIA S7-1200</span>
+            </div>
+          </button>
+        ) : (
+          <div className="flex items-center gap-2 pr-2 border-r border-slate-200 shrink-0">
+            <BrandLogo collapsed />
+            <div className="hidden 2xl:flex flex-col leading-tight">
+              <span className="text-xs font-extrabold tracking-tight text-slate-900">Baru Studio</span>
+              <span className="text-[10px] font-semibold text-sky-600">CADe + TIA S7-1200</span>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Título editable del proyecto */}
         <input
@@ -339,14 +357,16 @@ export const TinkerHeader: React.FC<Props> = ({
                 ? hasActiveCloudProject
                   ? 'Guardar cambios en Supabase'
                   : 'Guardar este proyecto en tu nube Supabase'
-                : 'Inicia sesión para guardar en la nube'
+                : 'Requiere cuenta gratuita — Inicia sesión para guardar en la nube'
             }
             className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap ${
-              syncStatus === 'saved'
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                : syncStatus === 'error' || syncStatus === 'offline'
-                  ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+              !isAuthenticated
+                ? 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100 opacity-85 hover:opacity-100'
+                : syncStatus === 'saved'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                  : syncStatus === 'error' || syncStatus === 'offline'
+                    ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
             }`}
           >
             {syncStatus === 'saving' ? (
@@ -365,24 +385,39 @@ export const TinkerHeader: React.FC<Props> = ({
                   ? 'Guardado'
                   : 'Guardar'}
             </span>
+            {!isAuthenticated && <Lock className="w-3 h-3 text-amber-600/80 shrink-0" />}
           </button>
 
           <button
             onClick={onOpenImportModal}
-            title="Importar archivos .cad, .scl, Openness .xml o .json"
-            className="flex items-center gap-1 p-1.5 2xl:px-2 rounded-xl text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer whitespace-nowrap"
+            title={
+              isAuthenticated
+                ? 'Importar archivos .cad, .scl, Openness .xml o .json'
+                : 'Requiere cuenta gratuita — Inicia sesión para importar'
+            }
+            className={`flex items-center gap-1 p-1.5 2xl:px-2 rounded-xl text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer whitespace-nowrap ${
+              !isAuthenticated ? 'opacity-85 hover:opacity-100' : ''
+            }`}
           >
             <Upload className="w-3.5 h-3.5" />
             <span className="hidden 2xl:inline">Importar</span>
+            {!isAuthenticated && <Lock className="w-3 h-3 text-amber-600/80 shrink-0" />}
           </button>
 
           <button
             onClick={onOpenExportModal}
-            title="Descargar en formato CADe_SIMU (.cad) o Siemens TIA Portal (.zip/.xml/.scl)"
-            className="flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 transition-colors cursor-pointer whitespace-nowrap"
+            title={
+              isAuthenticated
+                ? 'Descargar en formato CADe_SIMU (.cad) o Siemens TIA Portal (.zip/.xml/.scl)'
+                : 'Requiere cuenta gratuita — Inicia sesión para exportar'
+            }
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 transition-colors cursor-pointer whitespace-nowrap ${
+              !isAuthenticated ? 'opacity-85 hover:opacity-100' : ''
+            }`}
           >
             <Download className="w-3.5 h-3.5" />
             <span className="hidden md:inline">Exportar</span>
+            {!isAuthenticated && <Lock className="w-3 h-3 text-amber-600/80 shrink-0" />}
           </button>
         </div>
 
@@ -480,13 +515,23 @@ export const TinkerHeader: React.FC<Props> = ({
               )}
             </>
           ) : (
-            <button
-              onClick={() => onOpenAuth('login')}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 transition-colors shadow-xs cursor-pointer whitespace-nowrap"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Iniciar sesión</span>
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => onOpenAuth('signup')}
+                title="Modo Invitado — Haz clic para crear una cuenta gratuita"
+                className="hidden lg:inline-flex items-center px-2 py-1 rounded-lg text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Modo Invitado
+              </button>
+              <button
+                onClick={() => onOpenAuth('login')}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 transition-colors shadow-xs cursor-pointer whitespace-nowrap"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Iniciar sesión</span>
+              </button>
+            </div>
           )}
         </div>
       </div>

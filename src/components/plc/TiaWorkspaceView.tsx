@@ -734,7 +734,16 @@ export const TiaWorkspaceView: React.FC<Props> = ({
               </div>
             )}
 
-            {filteredRungs.length === 0 ? (
+            {program.rungs.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-8 text-center space-y-2">
+                <div className="text-sm font-bold text-slate-700">
+                  Proyecto Ladder vacío — haz clic en «Añadir Nuevo Segmento (Network LAD)» o abre un ejemplo.
+                </div>
+                <div className="text-xs text-slate-500">
+                  Crea redes de contactos, ramas OR en paralelo y temporizadores IEC TON/TOF.
+                </div>
+              </div>
+            ) : filteredRungs.length === 0 ? (
               <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-2">
                 <div className="text-sm font-bold text-slate-700">
                   No se encontraron segmentos para el filtro actual
@@ -753,6 +762,15 @@ export const TiaWorkspaceView: React.FC<Props> = ({
             ) : (
               filteredRungs.map((rung) => {
               const rungActive = isOnlineActive && Boolean(runtime.rungPowerFlow[rung.id]);
+              const hasMultiBranch = rung.branches.length > 1;
+              const anyBranchActive =
+                isOnlineActive &&
+                (rung.branches.length === 0 ||
+                  rung.branches.some(
+                    (br) =>
+                      br.contacts.length > 0 &&
+                      br.contacts.every((ct) => Boolean(runtime.elementPowerFlow[ct.id]))
+                  ));
               return (
                 <div
                   key={rung.id}
@@ -810,67 +828,113 @@ export const TiaWorkspaceView: React.FC<Props> = ({
                     <div className="flex items-center min-w-[600px]">
                       {/* Power Rail Izquierdo */}
                       <div
-                        className={`w-1.5 self-stretch rounded-full mr-3 ${
+                        className={`w-1.5 self-stretch rounded-full shrink-0 mr-0 ${
                           isOnlineActive ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : 'bg-slate-800'
                         }`}
                       />
 
-                      {/* Ramas paralelas OR */}
-                      <div className="flex flex-col gap-3 py-1">
-                        {rung.branches.map((br) => (
-                          <div key={br.id} className="flex items-center">
-                            <div
-                              className={`h-0.5 w-6 ${
-                                isOnlineActive ? 'bg-emerald-500' : 'bg-slate-400'
-                              }`}
-                            />
-                            {br.contacts.map((ct) => {
-                              const ctOn = isOnlineActive && Boolean(runtime.elementPowerFlow[ct.id]);
-                              const lineCls = isOnlineActive
-                                ? ctOn
-                                  ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
-                                  : 'border-sky-400 border-dashed bg-sky-50/40 text-sky-800'
-                                : 'border-slate-300 bg-white text-slate-800';
-                              return (
-                                <div key={ct.id} className="flex items-center">
-                                  <div
-                                    className={`px-3 py-1.5 rounded-xl border-2 text-center shadow-2xs transition-all ${lineCls}`}
-                                  >
-                                    <div className="text-[10px] font-bold truncate max-w-[110px]">
-                                      {getTagLabel(ct.address)}
-                                    </div>
-                                    <div className="flex items-center justify-center gap-1.5 mt-0.5">
-                                      <button
-                                        onClick={() => handleToggleContactType(rung.id, br.id, ct.id)}
-                                        className="font-mono text-xs font-extrabold px-1.5 py-0.2 rounded bg-slate-900/5 hover:bg-slate-900/10 cursor-pointer"
-                                        title="Clic para alternar NO / NC"
+                      {/* Ramas paralelas OR con barra colectora derecha continua */}
+                      {rung.branches.length > 0 ? (
+                        <div className="flex flex-col shrink-0">
+                          {rung.branches.map((br, idx) => {
+                            const lastContact = br.contacts[br.contacts.length - 1];
+                            const lastCtOn =
+                              lastContact && isOnlineActive && Boolean(runtime.elementPowerFlow[lastContact.id]);
+                            return (
+                              <div key={br.id} className="relative flex items-center py-1.5">
+                                {/* Cable horizontal desde el Power Rail izquierdo */}
+                                <div
+                                  className={`h-0.5 w-5 shrink-0 ${
+                                    isOnlineActive ? 'bg-emerald-500' : 'bg-slate-400'
+                                  }`}
+                                />
+                                {br.contacts.map((ct, cIdx) => {
+                                  const ctOn = isOnlineActive && Boolean(runtime.elementPowerFlow[ct.id]);
+                                  const lineCls = isOnlineActive
+                                    ? ctOn
+                                      ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                                      : 'border-sky-400 border-dashed bg-sky-50/40 text-sky-800'
+                                    : 'border-slate-300 bg-white text-slate-800';
+                                  const isLastInBranch = cIdx === br.contacts.length - 1;
+                                  return (
+                                    <React.Fragment key={ct.id}>
+                                      <div
+                                        className={`px-3 py-1.5 rounded-xl border-2 text-center shadow-2xs transition-all shrink-0 ${lineCls}`}
                                       >
-                                        {ct.type === 'NC' ? '--|/|-' : '--| |--'}
-                                      </button>
-                                      <button
-                                        onClick={() => handleCycleContact(rung.id, br.id, ct.id)}
-                                        className="font-mono text-[10px] font-bold text-sky-700 hover:underline cursor-pointer"
-                                        title="Clic para cambiar variable"
-                                      >
-                                        {ct.address}
-                                      </button>
-                                    </div>
+                                        <div className="text-[10px] font-bold truncate max-w-[110px]">
+                                          {getTagLabel(ct.address)}
+                                        </div>
+                                        <div className="flex items-center justify-center gap-1.5 mt-0.5">
+                                          <button
+                                            onClick={() => handleToggleContactType(rung.id, br.id, ct.id)}
+                                            className="font-mono text-xs font-extrabold px-1.5 py-0.2 rounded bg-slate-900/5 hover:bg-slate-900/10 cursor-pointer"
+                                            title="Clic para alternar NO / NC"
+                                          >
+                                            {ct.type === 'NC' ? '--|/|-' : '--| |--'}
+                                          </button>
+                                          <button
+                                            onClick={() => handleCycleContact(rung.id, br.id, ct.id)}
+                                            className="font-mono text-[10px] font-bold text-sky-700 hover:underline cursor-pointer"
+                                            title="Clic para cambiar variable"
+                                          >
+                                            {ct.address}
+                                          </button>
+                                        </div>
+                                      </div>
+                                      {!isLastInBranch && (
+                                        <div
+                                          className={`h-0.5 w-5 shrink-0 ${
+                                            isOnlineActive
+                                              ? ctOn
+                                                ? 'bg-emerald-500'
+                                                : 'bg-sky-400'
+                                              : 'bg-slate-400'
+                                          }`}
+                                        />
+                                      )}
+                                    </React.Fragment>
+                                  );
+                                })}
+                                {/* Cable extensible hasta la barra colectora derecha */}
+                                <div
+                                  className={`flex-1 min-w-[20px] h-0.5 ${
+                                    isOnlineActive
+                                      ? br.contacts.length === 0 || lastCtOn
+                                        ? 'bg-emerald-500'
+                                        : 'bg-sky-400'
+                                      : 'bg-slate-400'
+                                  }`}
+                                />
+                                {/* Barra colectora vertical OR derecha continua sin huecos */}
+                                {hasMultiBranch && (
+                                  <div className="relative w-0.5 self-stretch shrink-0">
+                                    <div
+                                      className={`absolute left-0 right-0 ${
+                                        idx === 0
+                                          ? 'top-[calc(50%-1px)] -bottom-1.5'
+                                          : idx === rung.branches.length - 1
+                                            ? '-top-1.5 bottom-[calc(50%-1px)]'
+                                            : '-inset-y-1.5'
+                                      } ${anyBranchActive ? 'bg-emerald-500' : 'bg-slate-400'}`}
+                                    />
                                   </div>
-                                  <div
-                                    className={`h-0.5 w-6 ${
-                                      isOnlineActive
-                                        ? ctOn
-                                          ? 'bg-emerald-500'
-                                          : 'bg-sky-400'
-                                        : 'bg-slate-400'
-                                    }`}
-                                  />
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ))}
-                      </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+
+                      {/* Cable colector de salida hacia contactos en serie / bobinas */}
+                      <div
+                        className={`h-0.5 w-5 shrink-0 ${
+                          isOnlineActive
+                            ? anyBranchActive
+                              ? 'bg-emerald-500'
+                              : 'bg-sky-400'
+                            : 'bg-slate-400'
+                        }`}
+                      />
 
                       {/* Contactos en serie */}
                       {rung.seriesContacts.map((sc) => {
@@ -881,7 +945,7 @@ export const TiaWorkspaceView: React.FC<Props> = ({
                             : 'border-sky-400 border-dashed bg-sky-50/40 text-sky-800'
                           : 'border-slate-300 bg-white text-slate-800';
                         return (
-                          <div key={sc.id} className="flex items-center">
+                          <div key={sc.id} className="flex items-center shrink-0">
                             <div className={`px-3 py-1.5 rounded-xl border-2 text-center shadow-2xs ${lineCls}`}>
                               <div className="text-[10px] font-bold truncate max-w-[110px]">
                                 {getTagLabel(sc.address)}
@@ -902,7 +966,7 @@ export const TiaWorkspaceView: React.FC<Props> = ({
                               </div>
                             </div>
                             <div
-                              className={`h-0.5 w-6 ${
+                              className={`h-0.5 w-5 shrink-0 ${
                                 isOnlineActive
                                   ? scOn
                                     ? 'bg-emerald-500'
@@ -1237,6 +1301,25 @@ export const TiaWorkspaceView: React.FC<Props> = ({
                     </div>
                   ))}
                 </div>
+              </div>
+            ) : program.grafcetSteps.length <= 1 && program.grafcetTransitions.length === 0 ? (
+              <div className="max-w-xl w-full bg-white rounded-2xl border border-dashed border-slate-300 p-8 shadow-2xs text-center space-y-3">
+                <div className="text-sm font-extrabold text-slate-800">
+                  Secuencia GRAFCET vacía (IEC 60848)
+                </div>
+                <p className="text-xs text-slate-500">
+                  Importa un esquema <span className="font-mono font-bold">.cad</span> con GRAFCET o abre un ejemplo para visualizar etapas, acciones y transiciones en tiempo real.
+                </p>
+                {program.grafcetSteps[0] && (
+                  <div className="inline-flex items-center gap-3 px-4 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                    <span className="px-2 py-0.5 rounded-lg border-2 border-slate-700 bg-white font-mono font-extrabold text-slate-800">
+                      {program.grafcetSteps[0].name}
+                    </span>
+                    <span className="font-semibold text-slate-600">
+                      {program.grafcetSteps[0].actionLabel || 'Etapa inicial lista'}
+                    </span>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="max-w-xl w-full bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">

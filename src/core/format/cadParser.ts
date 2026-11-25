@@ -8,6 +8,7 @@ import {
   TiaLadderCoil,
   TiaLadderContact,
   TiaLadderRung,
+  TiaLadderTimer,
   TiaProgramDocument,
   TiaTag,
   transpileLadderToScl
@@ -306,7 +307,7 @@ export class CadParser {
       const posY = baseGridY + dy;
 
       const rotation = this.parseRotation(coords, rotIdx, isWebExport);
-      const { tag, plcAddress, value } = this.extractTagAndAddress(typeId, mappedType, attrs, label, idx);
+      const { tag, plcAddress, value, timerValue } = this.extractTagAndAddress(typeId, mappedType, attrs, label, idx);
 
       const comp: PlacedComponent = {
         id: `comp_${compCounter++}`,
@@ -320,6 +321,7 @@ export class CadParser {
 
       if (plcAddress) comp.plcAddress = plcAddress;
       if (value) comp.value = value;
+      if (timerValue !== undefined) comp.timerValue = timerValue;
 
       doc.components.push(comp);
     }
@@ -405,7 +407,8 @@ export class CadParser {
     const ladderComps = doc.components.filter(c => c.type.startsWith('plc_ladder_'));
 
     const tagsByAddr = new Map<string, TiaTag>();
-    const symbolToAddr = new Map<string, string>();
+    const exactSymbolToAddr = new Map<string, string>();
+    const lowerSymbolToAddr = new Map<string, string>();
     const usedNames = new Set<string>();
 
     let nextInputBit = 0;
@@ -460,7 +463,17 @@ export class CadParser {
     ): string => {
       const cleanRaw = this.cleanText(rawName);
       const normKey = cleanRaw.toLowerCase();
+      // Evitar colisiones entre etapas GRAFCET (E0, E1) y sensores de cilindro (e0, e1)
+      const isCaseSensitiveShort = /^[A-Za-z]\d+$/.test(cleanRaw);
       const explicit = normalizeExplicitAddr(explicitAddr) || normalizeExplicitAddr(cleanRaw);
+
+      const registerSymbol = (addr: string) => {
+        if (!cleanRaw) return;
+        exactSymbolToAddr.set(cleanRaw, addr);
+        if (!isCaseSensitiveShort) {
+          lowerSymbolToAddr.set(normKey, addr);
+        }
+      };
 
       if (explicit) {
         if (!tagsByAddr.has(explicit)) {
@@ -476,12 +489,13 @@ export class CadParser {
             comment: comment || `Importado desde CADe_SIMU (${cleanRaw || explicit})`
           });
         }
-        if (normKey) symbolToAddr.set(normKey, explicit);
+        registerSymbol(explicit);
         return explicit;
       }
 
-      if (normKey && symbolToAddr.has(normKey)) {
-        return symbolToAddr.get(normKey)!;
+      if (cleanRaw) {
+        const existing = exactSymbolToAddr.get(cleanRaw) || (!isCaseSensitiveShort ? lowerSymbolToAddr.get(normKey) : undefined);
+        if (existing) return existing;
       }
 
       const area = preferredArea === 'M' && looksLikeOutput(cleanRaw) ? 'Q' : preferredArea;
@@ -495,7 +509,7 @@ export class CadParser {
         schematicTag: cleanRaw || undefined,
         comment: comment || `Variable extraída de plano CADe_SIMU`
       });
-      if (normKey) symbolToAddr.set(normKey, addr);
+      registerSymbol(addr);
       return addr;
     };
 
@@ -504,7 +518,39 @@ export class CadParser {
       return t?.schematicTag || t?.name || addr;
     };
 
-    // Pre-registrar bobinas y acciones primero para que los contactos que referencian una salida/marca reutilicen su dirección
+    // Pre-registrar en 3 fases:
+    // 1) Bobinas y acciones CON dirección explícita (prioridad de nombre de salida/marca)
+    // 2) Contactos y bornes CON dirección explícita (reservar %I/%Q/%M declarados antes de autoasignar)
+    // 3) Bobinas y acciones SIN dirección explícita
+    for (const c of ladderComps) {
+      if (c.type.startsWith('plc_ladder_coil')) {
+        const exp = normalizeExplicitAddr(c.plcAddress) || normalizeExplicitAddr(c.tag);
+        if (exp) ensureTag(c.tag, exp, looksLikeOutput(c.tag) ? 'Q' : 'M', 'Bobina Ladder importada');
+      }
+    }
+    for (const c of grafcetComps) {
+      if (c.type === 'grafcet_action') {
+        const exp = normalizeExplicitAddr(c.plcAddress) || normalizeExplicitAddr(c.tag);
+        if (exp) ensureTag(c.tag, exp, looksLikeOutput(c.tag) ? 'Q' : 'M', 'Acción GRAFCET importada');
+      }
+    }
+    for (const c of ladderComps) {
+      if (!c.type.startsWith('plc_ladder_coil')) {
+        const exp = normalizeExplicitAddr(c.plcAddress) || normalizeExplicitAddr(c.tag);
+        if (exp) {
+          const area: 'I' | 'Q' | 'M' = exp.startsWith('%Q') ? 'Q' : exp.startsWith('%M') ? 'M' : 'I';
+          ensureTag(c.tag, exp, area, 'Contacto Ladder importado');
+        }
+      }
+    }
+    for (const c of doc.components) {
+      if (c.type === 'plc_input_module' || c.type === 'plc_output_module') {
+        const exp = normalizeExplicitAddr(c.plcAddress || c.tag);
+        if (exp) {
+          ensureTag(c.tag, exp, exp.startsWith('%Q') ? 'Q' : 'I', 'Borne PLC importado');
+        }
+      }
+    }
     for (const c of ladderComps) {
       if (c.type.startsWith('plc_ladder_coil')) {
         ensureTag(c.tag, c.plcAddress, looksLikeOutput(c.tag) ? 'Q' : 'M', 'Bobina Ladder importada');
@@ -513,15 +559,6 @@ export class CadParser {
     for (const c of grafcetComps) {
       if (c.type === 'grafcet_action') {
         ensureTag(c.tag, c.plcAddress, looksLikeOutput(c.tag) ? 'Q' : 'M', 'Acción GRAFCET importada');
-      }
-    }
-    // Registrar también pulsadores/sensores del plano si tienen dirección PLC o nombres útiles
-    for (const c of doc.components) {
-      if (c.type === 'plc_input_module' || c.type === 'plc_output_module') {
-        const exp = normalizeExplicitAddr(c.plcAddress || c.tag);
-        if (exp) {
-          ensureTag(c.tag, exp, exp.startsWith('%Q') ? 'Q' : 'I', 'Borne PLC importado');
-        }
       }
     }
 
@@ -535,9 +572,15 @@ export class CadParser {
     const ladderContacts = ladderComps
       .filter(c => c.type === 'plc_ladder_contact_no' || c.type === 'plc_ladder_contact_nc')
       .sort((a, b) => a.y - b.y || a.x - b.x);
+    const ladderTimers =
+      ladderCoils.length > 0
+        ? doc.components
+            .filter(c => c.type === 'coil_timer_ton' || c.type === 'coil_timer_tof')
+            .sort((a, b) => a.y - b.y || a.x - b.x)
+        : [];
 
     if (ladderCoils.length > 0) {
-      // Agrupar bobinas por banda horizontal (misma columna de bobinas: |dx| <= 6)
+      // Agrupar bobinas por banda horizontal (misma columna de bobinas: |dx| <= 8)
       const coilColumns: PlacedComponent[][] = [];
       for (const coil of ladderCoils) {
         const col = coilColumns.find(group => Math.abs(group[0].x - coil.x) <= 8);
@@ -549,10 +592,10 @@ export class CadParser {
       coilColumns.sort((a, b) => a[0].x - b[0].x);
       let rungNum = 1;
       const usedContactIds = new Set<string>();
+      const usedTimerIds = new Set<string>();
 
       for (let colIdx = 0; colIdx < coilColumns.length; colIdx++) {
         const colCoils = coilColumns[colIdx].sort((a, b) => a.y - b.y || a.x - b.x);
-        const colCoilX = Math.max(...colCoils.map(c => c.x));
         const prevColX = colIdx > 0 ? Math.max(...coilColumns[colIdx - 1].map(c => c.x)) + 2 : -Infinity;
 
         // Agrupar bobinas que comparten fila (|dy| <= 1) como bobinas en paralelo del mismo rung
@@ -566,18 +609,48 @@ export class CadParser {
           }
         }
 
+        // Pre-emparejar temporizadores IEC TON/TOF (10066) en cada fila de bobinas:
+        // en CADe_SIMU el pin IN del 10066 está ~2 celdas arriba de la bobina conectada a Q.
+        const rowTimers: (PlacedComponent | undefined)[] = coilRows.map((rowCoils, rIdx) => {
+          const coilY = Math.min(...rowCoils.map(c => c.y));
+          const prevCoilY = rIdx > 0 ? Math.min(...coilRows[rIdx - 1].map(c => c.y)) : -Infinity;
+          const nextCoilY = rIdx + 1 < coilRows.length ? Math.min(...coilRows[rIdx + 1].map(c => c.y)) : Infinity;
+          const rowMinCoilX = Math.min(...rowCoils.map(c => c.x));
+          const candidates = ladderTimers.filter(
+            tm =>
+              !usedTimerIds.has(tm.id) &&
+              tm.x > prevColX &&
+              tm.x < rowMinCoilX &&
+              tm.y >= coilY - 2 &&
+              tm.y <= coilY + 1 &&
+              tm.y > prevCoilY &&
+              tm.y < nextCoilY - 1
+          );
+          if (candidates.length === 0) return undefined;
+          candidates.sort((a, b) => Math.abs(a.y - coilY) - Math.abs(b.y - coilY));
+          usedTimerIds.add(candidates[0].id);
+          return candidates[0];
+        });
+
+        const getRowTopY = (rIdx: number): number => {
+          const coilY = Math.min(...coilRows[rIdx].map(c => c.y));
+          const tm = rowTimers[rIdx];
+          return tm ? Math.min(coilY, tm.y - 1) : coilY;
+        };
+
         for (let rIdx = 0; rIdx < coilRows.length; rIdx++) {
           const rowCoils = coilRows[rIdx];
-          const rungTopY = Math.min(...rowCoils.map(c => c.y));
+          const rowCoilX = Math.min(...rowCoils.map(c => c.x));
+          const rungTopY = getRowTopY(rIdx);
           const nextRungTopY =
-            rIdx + 1 < coilRows.length ? Math.min(...coilRows[rIdx + 1].map(c => c.y)) : Infinity;
+            rIdx + 1 < coilRows.length ? getRowTopY(rIdx + 1) : Infinity;
 
           // Contactos pertenecientes a esta columna y banda vertical [rungTopY - 1, nextRungTopY - 1)
           const rungContacts = ladderContacts.filter(
             ct =>
               !usedContactIds.has(ct.id) &&
               ct.x > prevColX &&
-              ct.x < colCoilX &&
+              ct.x < rowCoilX &&
               ct.y >= rungTopY - 1 &&
               ct.y < nextRungTopY - 1
           );
@@ -650,6 +723,16 @@ export class CadParser {
             address: ensureTag(cl.tag, cl.plcAddress, looksLikeOutput(cl.tag) ? 'Q' : 'M', 'Bobina Ladder importada')
           }));
 
+          const tmComp = rowTimers[rIdx];
+          const timer: TiaLadderTimer | undefined = tmComp
+            ? {
+                id: `cad_tm_${rungNum}`,
+                name: toValidSymbol(tmComp.tag || `TON_${rungNum}`, 'TON'),
+                type: tmComp.type === 'coil_timer_tof' ? 'TOF' : 'TON',
+                presetSeconds: tmComp.timerValue && tmComp.timerValue > 0 ? tmComp.timerValue : 3.0
+              }
+            : undefined;
+
           const coilNames = rowCoils.map(c => c.tag).join(', ');
           rungs.push({
             id: `cad_net_${rungNum}`,
@@ -657,6 +740,7 @@ export class CadParser {
             comment: `Red ${rungNum}: ${coilNames || coils.map(c => c.address).join(', ')}`,
             branches,
             seriesContacts,
+            ...(timer ? { timer } : {}),
             coils
           });
           rungNum++;
@@ -750,6 +834,15 @@ export class CadParser {
       // Garantizar al menos una etapa inicial
       if (grafcetSteps.length > 0 && !grafcetSteps.some(s => s.isInitial)) {
         grafcetSteps[0].isInitial = true;
+      }
+
+      // Pre-registrar marcas de etapa (%M) ANTES de normalizar receptividades (evita que E26/E31 caigan en %I)
+      const stepMemMap = new Map<number, string>();
+      for (const step of grafcetSteps) {
+        stepMemMap.set(
+          step.id,
+          ensureTag(`E${step.id}`, undefined, 'M', `Marca Etapa GRAFCET ${step.id}`)
+        );
       }
 
       // Agrupar etapas por columnas para enlazar transiciones arriba -> abajo (y retorno de cierre)
@@ -873,14 +966,6 @@ export class CadParser {
       // 1) Inicialización de etapa inicial, 2) Transiciones (E_from AND receptividad -> SET E_to, RESET E_from),
       // 3) Activación de salidas por etapa (agrupadas por salida para evitar doble bobina).
       if (rungs.length < Math.max(3, Math.floor(grafcetSteps.length / 2))) {
-        const stepMemMap = new Map<number, string>();
-        for (const step of grafcetSteps) {
-          stepMemMap.set(
-            step.id,
-            ensureTag(`E${step.id}`, undefined, 'M', `Marca Etapa GRAFCET ${step.id}`)
-          );
-        }
-
         const parseClauseContacts = (clause: string, prefixId: string): TiaLadderContact[] => {
           const out: TiaLadderContact[] = [];
           const toks = clause.replace(/[()]/g, ' ').split(/\s+/).filter(Boolean);
@@ -892,7 +977,7 @@ export class CadParser {
               neg = true;
               continue;
             }
-            if (up === 'AND' || up === 'XOR' || up === 'TRUE') {
+            if (up === 'AND' || up === 'OR' || up === 'XOR' || up === 'TRUE') {
               neg = false;
               continue;
             }
@@ -907,37 +992,98 @@ export class CadParser {
           return out;
         };
 
+        const stripOuterParens = (expr: string): string => {
+          let s = expr.trim();
+          while (s.startsWith('(') && s.endsWith(')')) {
+            let depth = 0;
+            let closesAtEnd = true;
+            for (let i = 0; i < s.length; i++) {
+              if (s[i] === '(') depth++;
+              else if (s[i] === ')') {
+                depth--;
+                if (depth === 0 && i < s.length - 1) {
+                  closesAtEnd = false;
+                  break;
+                }
+              }
+            }
+            if (!closesAtEnd) break;
+            s = s.slice(1, -1).trim();
+          }
+          return s;
+        };
+
+        const splitTopLevel = (expr: string, op: 'OR' | 'AND'): string[] => {
+          const out: string[] = [];
+          let depth = 0;
+          let buf = '';
+          const words = expr.replace(/\(/g, ' ( ').replace(/\)/g, ' ) ').split(/\s+/).filter(Boolean);
+          for (const w of words) {
+            if (w === '(') depth++;
+            else if (w === ')') depth = Math.max(0, depth - 1);
+            if (depth === 0 && w.toUpperCase() === op) {
+              if (buf.trim()) out.push(buf.trim());
+              buf = '';
+            } else {
+              buf += (buf ? ' ' : '') + w;
+            }
+          }
+          if (buf.trim()) out.push(buf.trim());
+          return out;
+        };
+
         let synthNum = rungs.length + 1;
         const initSteps = grafcetSteps.filter(s => s.isInitial);
         const nonInitSteps = grafcetSteps.filter(s => !s.isInitial);
+        const initIdSet = new Set(initSteps.map(s => s.id));
         if (initSteps.length > 0 && nonInitSteps.length > 0) {
-          const initStep = initSteps[0];
-          const initAddr = stepMemMap.get(initStep.id)!;
-          const otherGuards = nonInitSteps.slice(0, 8).map((s, idx) => ({
-            id: `cad_g_init_c${idx}`,
-            type: 'NC' as const,
-            address: stepMemMap.get(s.id)!
-          }));
-          rungs.push({
-            id: `cad_grafcet_net_${synthNum}`,
-            number: synthNum,
-            comment: `Inicialización etapa inicial ${initStep.name}`,
-            branches: [
-              {
-                id: `cad_g_br_${synthNum}_0`,
-                contacts: [otherGuards[0]]
+          for (const initStep of initSteps) {
+            const initAddr = stepMemMap.get(initStep.id)!;
+            // Encontrar etapas no-iniciales alcanzables desde esta etapa inicial (útil en GEMMA multi-GRAFCET)
+            let peerSteps: TiaGrafcetStep[] = [];
+            if (initSteps.length > 1) {
+              const visited = new Set<number>([initStep.id]);
+              const queue = [initStep.id];
+              while (queue.length > 0) {
+                const cur = queue.shift()!;
+                for (const tr of grafcetTransitions) {
+                  if (tr.fromStep === cur && !visited.has(tr.toStep) && !initIdSet.has(tr.toStep)) {
+                    visited.add(tr.toStep);
+                    queue.push(tr.toStep);
+                  }
+                }
               }
-            ],
-            seriesContacts: otherGuards.slice(1),
-            coils: [
-              {
-                id: `cad_g_coil_${synthNum}_set`,
-                type: 'SET',
-                address: initAddr
-              }
-            ]
-          });
-          synthNum++;
+              peerSteps = nonInitSteps.filter(s => visited.has(s.id));
+            }
+            const guardSteps = (peerSteps.length > 0 ? peerSteps : nonInitSteps).slice(0, 8);
+            const otherGuards = guardSteps.map((s, idx) => ({
+              id: `cad_g_init_${synthNum}_c${idx}`,
+              type: 'NC' as const,
+              address: stepMemMap.get(s.id)!
+            }));
+            if (otherGuards.length > 0) {
+              rungs.push({
+                id: `cad_grafcet_net_${synthNum}`,
+                number: synthNum,
+                comment: `Inicialización etapa inicial ${initStep.name}`,
+                branches: [
+                  {
+                    id: `cad_g_br_${synthNum}_0`,
+                    contacts: [otherGuards[0]]
+                  }
+                ],
+                seriesContacts: otherGuards.slice(1),
+                coils: [
+                  {
+                    id: `cad_g_coil_${synthNum}_set`,
+                    type: 'SET',
+                    address: initAddr
+                  }
+                ]
+              });
+              synthNum++;
+            }
+          }
         }
 
         for (const tr of grafcetTransitions) {
@@ -945,52 +1091,63 @@ export class CadParser {
           const toAddr = stepMemMap.get(tr.toStep);
           if (!fromAddr || !toAddr) continue;
 
-          // Dividir OR de nivel superior (o grupo parentizado OR)
-          const cond = (tr.condition || 'TRUE').trim();
-          const topOrParts: string[] = [];
-          let depth = 0;
-          let buf = '';
-          const words = cond.replace(/\(/g, ' ( ').replace(/\)/g, ' ) ').split(/\s+/).filter(Boolean);
-          for (const w of words) {
-            if (w === '(') depth++;
-            else if (w === ')') depth = Math.max(0, depth - 1);
-            if (depth === 0 && w.toUpperCase() === 'OR') {
-              topOrParts.push(buf.trim());
-              buf = '';
-            } else {
-              buf += (buf ? ' ' : '') + w;
-            }
-          }
-          if (buf.trim()) topOrParts.push(buf.trim());
-
+          const cond = stripOuterParens((tr.condition || 'TRUE').trim());
           const branches: TiaLadderBranch[] = [];
           const seriesContacts: TiaLadderContact[] = [];
 
-          if (topOrParts.length > 1) {
-            topOrParts.forEach((part, bIdx) => {
-              const cts = parseClauseContacts(part, `cad_g_tr_${synthNum}_${bIdx}`);
-              if (cts.length > 0) {
-                branches.push({ id: `cad_g_br_${synthNum}_${bIdx}`, contacts: cts });
-              }
-            });
-            seriesContacts.push({
-              id: `cad_g_tr_${synthNum}_from`,
-              type: 'NO',
-              address: fromAddr
-            });
-          } else {
+          if (!cond || cond === 'TRUE') {
             branches.push({
               id: `cad_g_br_${synthNum}_0`,
-              contacts: [
-                {
+              contacts: [{ id: `cad_g_tr_${synthNum}_from`, type: 'NO', address: fromAddr }]
+            });
+          } else {
+            const topOrParts = splitTopLevel(cond, 'OR').map(stripOuterParens);
+            if (topOrParts.length > 1) {
+              topOrParts.forEach((part, bIdx) => {
+                const cts = parseClauseContacts(part, `cad_g_tr_${synthNum}_${bIdx}`);
+                if (cts.length > 0) {
+                  branches.push({ id: `cad_g_br_${synthNum}_${bIdx}`, contacts: cts });
+                }
+              });
+              seriesContacts.push({
+                id: `cad_g_tr_${synthNum}_from`,
+                type: 'NO',
+                address: fromAddr
+              });
+            } else {
+              // Descomponer factores AND: si uno contiene OR parentizado (ej. b1 AND (NOT ET OR Bp)),
+              // extraer sus ramas OR a branches[] y mantener los demás factores en seriesContacts[]
+              const andFactors = splitTopLevel(cond, 'AND').map(stripOuterParens);
+              const orGroups = andFactors.filter(f => splitTopLevel(f, 'OR').length > 1);
+              const plainFactors = andFactors.filter(f => splitTopLevel(f, 'OR').length <= 1);
+
+              if (orGroups.length === 1) {
+                const orBranches = splitTopLevel(orGroups[0], 'OR').map(stripOuterParens);
+                orBranches.forEach((part, bIdx) => {
+                  const cts = parseClauseContacts(part, `cad_g_tr_${synthNum}_${bIdx}`);
+                  if (cts.length > 0) {
+                    branches.push({ id: `cad_g_br_${synthNum}_${bIdx}`, contacts: cts });
+                  }
+                });
+                seriesContacts.push({
                   id: `cad_g_tr_${synthNum}_from`,
                   type: 'NO',
                   address: fromAddr
+                });
+                let pSeq = 0;
+                for (const pf of plainFactors) {
+                  seriesContacts.push(...parseClauseContacts(pf, `cad_g_tr_${synthNum}_p${pSeq++}`));
                 }
-              ]
-            });
-            if (cond !== 'TRUE') {
-              seriesContacts.push(...parseClauseContacts(cond, `cad_g_tr_${synthNum}`));
+              } else {
+                branches.push({
+                  id: `cad_g_br_${synthNum}_0`,
+                  contacts: [{ id: `cad_g_tr_${synthNum}_from`, type: 'NO', address: fromAddr }]
+                });
+                let pSeq = 0;
+                for (const af of andFactors) {
+                  seriesContacts.push(...parseClauseContacts(af, `cad_g_tr_${synthNum}_p${pSeq++}`));
+                }
+              }
             }
           }
 
@@ -1645,7 +1802,7 @@ export class CadParser {
     attrs: string[],
     label: string,
     idx: number
-  ): { tag: string; plcAddress?: string; value?: string } {
+  ): { tag: string; plcAddress?: string; value?: string; timerValue?: number } {
     const a0 = this.cleanText(attrs[0] || '');
     const a1 = this.cleanText(attrs[1] || '');
     const cleanLabel = this.cleanText(label);
@@ -1672,6 +1829,21 @@ export class CadParser {
     if (typeId === 10103 || mappedType === 'grafcet_action') {
       const tag = a0 || cleanLabel || `ACT${idx}`;
       return { tag, value: cleanLabel && cleanLabel !== tag ? cleanLabel : undefined };
+    }
+
+    // Temporizador Ladder IEC (10066): nombre en attrs[0], preset en attrs[5] (o attrs[4])
+    if (typeId === 10066) {
+      const plcAddress = toIec(a1);
+      const tag = a0 || plcAddress || cleanLabel || `TON_${idx}`;
+      const p5 = parseFloat(this.cleanText(attrs[5] || ''));
+      const p4 = parseFloat(this.cleanText(attrs[4] || ''));
+      const timerValue = !isNaN(p5) && p5 > 0 ? p5 : !isNaN(p4) && p4 > 0 ? p4 : 3;
+      return {
+        tag,
+        plcAddress,
+        value: `${timerValue}s`,
+        timerValue
+      };
     }
 
     // Contactos y bobinas Ladder (10050..10062): revisar tanto attrs[0] como attrs[1]

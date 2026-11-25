@@ -34,6 +34,7 @@ export default {
         }
       },
       fontFamily: {
+        display: ['"Space Grotesk"', '"Outfit"', 'Inter', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'Consolas', 'Courier New', 'monospace'],
         sans: ['Inter', 'system-ui', 'sans-serif'],
       }
