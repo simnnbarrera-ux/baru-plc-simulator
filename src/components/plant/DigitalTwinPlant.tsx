@@ -33,6 +33,8 @@ export const DigitalTwinPlant: React.FC<Props> = ({
 
   const startTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isStartHeldRef = useRef<boolean>(false);
+  const isStopHeldRef = useRef<boolean>(false);
 
   // Auto-detectar modo neumático o tanque cuando cambia el circuito cargado
   useEffect(() => {
@@ -109,12 +111,14 @@ export const DigitalTwinPlant: React.FC<Props> = ({
 
   const handleStartPress = (isPressed: boolean) => {
     if (isPressed) {
+      isStartHeldRef.current = true;
       if (startTimerRef.current) clearTimeout(startTimerRef.current);
       onPressButton('btn_start', true);
-    } else {
+    } else if (isStartHeldRef.current) {
+      isStartHeldRef.current = false;
       startTimerRef.current = setTimeout(() => {
         onPressButton('btn_start', false);
-      }, 250);
+      }, 380);
     }
   };
 
@@ -123,17 +127,19 @@ export const DigitalTwinPlant: React.FC<Props> = ({
     onPressButton('btn_start', true);
     startTimerRef.current = setTimeout(() => {
       onPressButton('btn_start', false);
-    }, 300);
+    }, 400);
   };
 
   const handleStopPress = (isPressed: boolean) => {
     if (isPressed) {
+      isStopHeldRef.current = true;
       if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
       onPressButton('btn_stop', true);
-    } else {
+    } else if (isStopHeldRef.current) {
+      isStopHeldRef.current = false;
       stopTimerRef.current = setTimeout(() => {
         onPressButton('btn_stop', false);
-      }, 250);
+      }, 320);
     }
   };
 
@@ -142,7 +148,7 @@ export const DigitalTwinPlant: React.FC<Props> = ({
     onPressButton('btn_stop', true);
     stopTimerRef.current = setTimeout(() => {
       onPressButton('btn_stop', false);
-    }, 350);
+    }, 380);
   };
 
   if (!isOpen && !embeddedMode) return null;
@@ -181,6 +187,15 @@ export const DigitalTwinPlant: React.FC<Props> = ({
           </h3>
           <span className="text-[9px] font-mono px-2 py-0.5 bg-emerald-500/20 text-emerald-300 rounded-full border border-emerald-400/30 font-bold">
             {plantBadge}
+          </span>
+          <span
+            className={`text-[9px] font-mono px-2 py-0.5 rounded-full border font-bold ${
+              simulationState.mode === 'running'
+                ? 'bg-sky-500/20 text-sky-300 border-sky-400/30'
+                : 'bg-amber-500/20 text-amber-300 border-amber-400/30'
+            }`}
+          >
+            {simulationState.mode === 'running' ? 'SIM EN VIVO' : 'EN ESPERA'}
           </span>
         </div>
 

@@ -1034,6 +1034,11 @@ export const App: React.FC = () => {
 
   const handleTwinPressButton = useCallback(
     (btnKey: string, isPressed: boolean) => {
+      // Si el usuario pulsa Marcha en Planta 2D con la simulación detenida, arrancar automáticamente
+      if (btnKey === 'btn_start' && isPressed && simStateRef.current.mode !== 'running') {
+        handleStartSimulation();
+      }
+
       const targets = docRef.current.components.filter(c => {
         if (btnKey === 'btn_start') {
           return (
@@ -1064,7 +1069,7 @@ export const App: React.FC = () => {
         plcInputsRef.current = { ...plcInputsRef.current, [addr]: isPressed };
       }
     },
-    [handlePressButton]
+    [handlePressButton, handleStartSimulation]
   );
 
   // Handlers del Wizard de 5 Pasos
